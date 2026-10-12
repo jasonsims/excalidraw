@@ -7,6 +7,8 @@ import { useAtom } from "../../../editor-jotai";
 import { trackEvent } from "../../../analytics";
 import { t } from "../../../i18n";
 
+import { useApp } from "../../App";
+
 import { errorAtom, rateLimitsAtom, chatHistoryAtom } from "../TTDContext";
 import { useChatAgent } from "../Chat";
 
@@ -17,6 +19,7 @@ import {
   removeLastAssistantMessage,
   updateAssistantContent,
 } from "../utils/chat";
+import { trackAgentEvent } from "../utils/trackAgent";
 
 import type { LLMMessage, TTTDDialog } from "../types";
 
@@ -30,6 +33,7 @@ export const useTextGeneration = ({
     props: TTTDDialog.OnTextSubmitProps,
   ) => Promise<TTTDDialog.OnTextSubmitRetValue>;
 }) => {
+  const app = useApp();
   const [, setError] = useAtom(errorAtom);
   const [rateLimits, setRateLimits] = useAtom(rateLimitsAtom);
   const [chatHistory, setChatHistory] = useAtom(chatHistoryAtom);
@@ -80,10 +84,22 @@ export const useTextGeneration = ({
     const abortController = new AbortController();
     streamingAbortControllerRef.current = abortController;
 
+    let assistantMessageId: string;
+
     if (!isRepairFlow) {
-      addUserMessage(prompt);
-      addAssistantMessage();
+      const userMessageId = addUserMessage(prompt);
+      assistantMessageId = addAssistantMessage();
+
+      trackAgentEvent(app.ownerWindow, "prompt", {
+        conversationId: chatHistory.id,
+        messageId: userMessageId,
+        content: prompt,
+        suggestedPrompt: false,
+        fileUploaded: false,
+      });
     } else {
+      // repair flow regenerates the last assistant message in place
+      assistantMessageId = getLastAssistantMessage(chatHistory)?.id;
       setChatHistory((prev) =>
         updateAssistantContent(prev, {
           isGenerating: true,
@@ -189,6 +205,12 @@ export const useTextGeneration = ({
 
         return;
       }
+
+      trackAgentEvent(app.ownerWindow, "agent_response", {
+        conversationId: chatHistory.id,
+        messageId: assistantMessageId,
+        content: generatedResponse,
+      });
 
       try {
         await parseMermaidToExcalidraw(generatedResponse ?? "");

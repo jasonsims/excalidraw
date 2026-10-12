@@ -23,6 +23,7 @@ import { TTDChatPanel } from "./Chat/TTDChatPanel";
 import { TTDPreviewPanel } from "./TTDPreviewPanel";
 
 import { getLastAssistantMessage } from "./utils/chat";
+import { trackAgentEvent } from "./utils/trackAgent";
 
 import type { BinaryFiles } from "../../types";
 import type {
@@ -78,6 +79,14 @@ const TextToDiagramContent = ({
     handleMenuToggle,
     handleMenuClose,
   } = useChatManagement({ persistenceAdapter });
+
+  const trackUserReaction = (messageId: string, reaction: "retry" | "undo") => {
+    trackAgentEvent(app.ownerWindow, "user_reaction", {
+      conversationId: chatHistory.id,
+      messageId,
+      content: reaction,
+    });
+  };
 
   const onViewAsMermaid = () => {
     if (typeof lastAssistantMessage?.content === "string") {
@@ -138,6 +147,8 @@ const TextToDiagramContent = ({
       return;
     }
 
+    trackUserReaction(message.id, "retry");
+
     const repairPrompt = `Fix the error in this Mermaid diagram. The diagram is:\n\n\`\`\`mermaid\n${mermaidContent}\n\`\`\`\n\nThe exception/error is: ${errorMessage}\n\nPlease fix the Mermaid syntax and regenerate a valid diagram.`;
 
     await onGenerate({ prompt: repairPrompt, isRepairFlow: true });
@@ -155,6 +166,7 @@ const TextToDiagramContent = ({
         typeof previousMessage.content === "string"
       ) {
         setLastRetryAttempt();
+        trackUserReaction(message.id, "retry");
         await onGenerate({
           prompt: previousMessage.content,
           isRepairFlow: true,
@@ -181,6 +193,8 @@ const TextToDiagramContent = ({
       ...chatHistory,
       messages: remainingMessages,
     });
+
+    trackUserReaction(messageId, "undo");
   };
 
   const handlePromptChange = (newPrompt: string) => {

@@ -1,3 +1,5 @@
+import { randomId } from "@excalidraw/common";
+
 import { useAtom } from "../../../editor-jotai";
 import { chatHistoryAtom } from "../../TTDDialog/TTDContext";
 import {
@@ -8,27 +10,35 @@ import {
 export const useChatAgent = () => {
   const [chatHistory, setChatHistory] = useAtom(chatHistoryAtom);
 
+  /** @returns id of the added message */
   const addUserMessage = (content: string) => {
+    const id = randomId();
     setChatHistory((prev) =>
       addMessages(prev, [
         {
+          id,
           type: "user",
           content,
         },
       ]),
     );
+    return id;
   };
 
+  /** @returns id of the added message */
   const addAssistantMessage = () => {
+    const id = randomId();
     setChatHistory((prev) =>
       addMessages(prev, [
         {
+          id,
           type: "assistant",
           content: "",
           isGenerating: true,
         },
       ]),
     );
+    return id;
   };
 
   const setLastRetryAttempt = () => {

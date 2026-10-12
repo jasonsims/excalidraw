@@ -1,5 +1,7 @@
 import { findLastIndex, randomId } from "@excalidraw/common";
 
+import type { Merge } from "@excalidraw/common/utility-types";
+
 import type { LLMMessage, TChat } from "../types";
 
 export const updateAssistantContent = (
@@ -45,11 +47,16 @@ export const getLastAssistantMessage = (chatHistory: TChat.ChatHistory) => {
 
 export const addMessages = (
   chatHistory: TChat.ChatHistory,
-  messages: Array<Omit<TChat.ChatMessage, "id" | "timestamp">>,
+  messages: Array<
+    Merge<
+      Omit<TChat.ChatMessage, "timestamp">,
+      { id?: TChat.ChatMessage["id"] }
+    >
+  >,
 ) => {
   const newMessages: Array<TChat.ChatMessage> = messages.map((message) => ({
     ...message,
-    id: randomId(),
+    id: message.id ?? randomId(),
     timestamp: new Date(),
   }));
 
