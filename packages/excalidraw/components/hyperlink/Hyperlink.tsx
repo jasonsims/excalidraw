@@ -36,7 +36,7 @@ import type {
   NonDeletedExcalidrawElement,
 } from "@excalidraw/element/types";
 
-import { trackEvent } from "../../analytics";
+import { getUrlHostname, trackEvent, trackPendoEvent } from "../../analytics";
 import { getTooltipDiv, updateTooltipPosition } from "../../components/Tooltip";
 
 import { t } from "../../i18n";
@@ -64,6 +64,26 @@ const embeddableLinkCache = new Map<
   ExcalidrawEmbeddableElement["id"],
   string
 >();
+
+const trackHyperlinkChanged = (
+  element: NonDeletedExcalidrawElement,
+  previousLink: string | null,
+  nextLink: string | null,
+) => {
+  if (previousLink === nextLink) {
+    return;
+  }
+  const link = nextLink ?? previousLink;
+  const isLinkToElement = !!link && isElementLink(link);
+  trackPendoEvent("element_hyperlink_changed", {
+    action: !previousLink ? "add" : !nextLink ? "remove" : "change",
+    linkType: isLinkToElement ? "element" : "external",
+    elementType: element.type,
+    isEmbeddable: isEmbeddableElement(element),
+    // hostname only — never the full URL
+    linkHost: link && !isLinkToElement ? getUrlHostname(link) : undefined,
+  });
+};
 
 export const Hyperlink = ({
   element,
@@ -105,6 +125,25 @@ export const Hyperlink = ({
 
     if (!element.link && link) {
       trackEvent("hyperlink", "create");
+    }
+
+    // (runs on submit, blur & unmount — only actual changes are tracked)
+    trackHyperlinkChanged(element, element.link || null, link);
+
+    // drawing with the embed tool & entering its first link
+    if (isEmbeddableElement(element) && !element.link && link) {
+      const embedLink = getEmbedLink(link);
+      trackPendoEvent("embeddable_inserted", {
+        source: "embed_tool",
+        embedType: embedLink?.type,
+        provider: getUrlHostname(link),
+        isAllowedEmbed: !!embeddableURLValidator(
+          link,
+          appProps.validateEmbeddable,
+        ),
+        embedCount: 1,
+        hasURIError: embedLink?.error instanceof URIError,
+      });
     }
 
     if (isEmbeddableElement(element)) {
@@ -228,6 +267,7 @@ export const Hyperlink = ({
 
   const handleRemove = useCallback(() => {
     trackEvent("hyperlink", "delete");
+    trackHyperlinkChanged(element, element.link || null, null);
     scene.mutateElement(element, { link: null });
     setAppState({ showHyperlinkPopup: false });
   }, [setAppState, element, scene]);

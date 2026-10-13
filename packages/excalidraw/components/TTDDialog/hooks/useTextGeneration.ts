@@ -4,7 +4,7 @@ import { isFiniteNumber } from "@excalidraw/math";
 
 import { useAtom } from "../../../editor-jotai";
 
-import { trackEvent } from "../../../analytics";
+import { trackEvent, trackPendoEvent } from "../../../analytics";
 import { t } from "../../../i18n";
 
 import { errorAtom, rateLimitsAtom, chatHistoryAtom } from "../TTDContext";
@@ -80,6 +80,34 @@ export const useTextGeneration = ({
     const abortController = new AbortController();
     streamingAbortControllerRef.current = abortController;
 
+    const generationStartedAt = Date.now();
+    let contextMessageCount: number | undefined;
+    const trackGeneration = (
+      outcome:
+        | "success"
+        | "parse_failed"
+        | "rate_limited"
+        | "request_failed"
+        | "aborted"
+        | "failed",
+      details: {
+        responseLength?: number;
+        errorStatus?: number;
+        rateLimit?: number | null;
+        rateLimitRemaining?: number | null;
+      } = {},
+    ) => {
+      trackPendoEvent("ai_text_to_diagram_generated", {
+        outcome,
+        isRepairFlow,
+        promptLength: prompt.length,
+        contextMessageCount,
+        durationMs: Date.now() - generationStartedAt,
+        chatId: chatHistory.id,
+        ...details,
+      });
+    };
+
     if (!isRepairFlow) {
       addUserMessage(prompt);
       addAssistantMessage();
@@ -104,6 +132,7 @@ export const useTextGeneration = ({
         ...previousMessages.slice(-3),
         { role: "user", content: prompt },
       ];
+      contextMessageCount = messages.length - 1;
 
       const { generatedResponse, error, rateLimit, rateLimitRemaining } =
         await onTextSubmit({
@@ -141,6 +170,13 @@ export const useTextGeneration = ({
       }
 
       if (error?.status === 429 || rateLimitRemaining === 0) {
+        trackPendoEvent("ai_usage_limit_reached", {
+          feature: "text_to_diagram",
+          limitType: rateLimitRemaining === 0 ? "message_limit" : "rate_limit",
+          rateLimit,
+          rateLimitRemaining,
+          errorStatus: error?.status,
+        });
         setChatHistory((chatHistory) => {
           if (error?.status === 429) {
             chatHistory = removeLastAssistantMessage(chatHistory);
@@ -176,8 +212,14 @@ export const useTextGeneration = ({
 
         // do nothing if the request was aborted by the user
         if (isAborted) {
+          trackGeneration("aborted");
           return;
         }
+
+        trackGeneration(
+          error.status === 429 ? "rate_limited" : "request_failed",
+          { errorStatus: error.status, rateLimit, rateLimitRemaining },
+        );
 
         const _error = new Error(
           error.message || t("chat.errors.requestFailed"),
@@ -193,8 +235,18 @@ export const useTextGeneration = ({
       try {
         await parseMermaidToExcalidraw(generatedResponse ?? "");
         trackEvent("ai", "mermaid parse success", "ttd");
+        trackGeneration("success", {
+          responseLength: generatedResponse?.length,
+          rateLimit,
+          rateLimitRemaining,
+        });
       } catch (error: any) {
         trackEvent("ai", "mermaid parse failed", "ttd");
+        trackGeneration("parse_failed", {
+          responseLength: generatedResponse?.length,
+          rateLimit,
+          rateLimitRemaining,
+        });
         const _error = new Error(
           error.message || t("chat.errors.mermaidParseError"),
         );
@@ -202,6 +254,7 @@ export const useTextGeneration = ({
         setError(_error);
       }
     } catch (error: any) {
+      trackGeneration("failed");
       const _error = new Error(
         error.message || t("chat.errors.generationFailed"),
       );

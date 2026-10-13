@@ -1,5 +1,6 @@
 import { CaptureUpdateAction } from "@excalidraw/element";
 
+import { trackPendoEvent } from "../analytics";
 import { messageCircleIcon } from "../components/icons";
 
 import { register } from "./register";
@@ -15,11 +16,18 @@ export const actionToggleShowHints = register({
     category: "canvas",
     predicate: (appState) => !appState.showHints,
   },
-  perform(elements, appState) {
+  perform(elements, appState, _value, _app, source) {
+    const showHints = !this.checked!(appState);
+    trackPendoEvent("editor_preference_changed", {
+      preference: "show_hints",
+      newValue: showHints,
+      previousValue: !showHints,
+      source,
+    });
     return {
       appState: {
         ...appState,
-        showHints: !this.checked!(appState),
+        showHints,
       },
       captureUpdate: CaptureUpdateAction.NEVER,
     };

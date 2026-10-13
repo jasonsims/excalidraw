@@ -14,7 +14,7 @@ import type {
   NonDeleted,
 } from "@excalidraw/element/types";
 
-import { trackEvent } from "../analytics";
+import { trackEvent, trackPendoEvent } from "../analytics";
 
 import type App from "./App";
 import type { ToolType } from "../types";
@@ -192,6 +192,13 @@ export class AppToolDrag {
       { keepSelection: true },
     );
     trackEvent("toolbar", type!, "drop");
+    trackPendoEvent("tool_dragged_to_canvas", {
+      toolType: type!,
+      droppedIntoFrame: !!preview.frameId,
+      gridSnapping:
+        !event[KEYS.CTRL_OR_CMD] && app.getEffectiveGridSize() !== null,
+      formFactor: app.editorInterface.formFactor,
+    });
     tool!.onDrop?.(app, preview);
   };
 

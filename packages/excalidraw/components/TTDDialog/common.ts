@@ -136,6 +136,7 @@ export const saveMermaidDataToStorage = (mermaidDefinition: string) => {
   );
 };
 
+/** @returns whether any elements were inserted */
 export const insertToEditor = ({
   app,
   data,
@@ -149,11 +150,11 @@ export const insertToEditor = ({
   }>;
   text?: string;
   shouldSaveMermaidDataToStorage?: boolean;
-}) => {
+}): boolean => {
   const { elements: newElements, files } = data.current;
 
   if (!newElements.length) {
-    return;
+    return false;
   }
 
   app.addElementsFromPasteOrLibrary({
@@ -167,4 +168,6 @@ export const insertToEditor = ({
   if (shouldSaveMermaidDataToStorage && text) {
     saveMermaidDataToStorage(text);
   }
+
+  return true;
 };

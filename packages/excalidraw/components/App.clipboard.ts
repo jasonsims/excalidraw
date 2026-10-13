@@ -35,11 +35,12 @@ import type {
 } from "@excalidraw/element/types";
 
 import { actionCopy, actionCut } from "../actions";
+import { trackPendoEvent } from "../analytics";
 import { tryParseSpreadsheet } from "../charts";
 import { parseClipboard, parseDataTransferEvent } from "../clipboard";
 import { ImageURLToFile, SVGStringToFile } from "../data/blob";
 import { t } from "../i18n";
-import { isMaybeMermaidDefinition } from "../mermaid";
+import { getMermaidDiagramType, isMaybeMermaidDefinition } from "../mermaid";
 import { withBatchedUpdates } from "../reactUtils";
 import { getShortcutKey } from "../shortcut";
 import { scrollBoundsIntoView } from "../viewport";
@@ -156,6 +157,7 @@ export class AppClipboard {
 
     // ------------------- Images or SVG code -------------------
     const imageFiles = dataTransferFiles.map((data) => data.file);
+    let isSVGCodePaste = false;
 
     if (imageFiles.length === 0 && data.text && !isPlainPaste) {
       const trimmedText = data.text.trim();
@@ -163,12 +165,18 @@ export class AppClipboard {
         // ignore SVG validation/normalization which will be done during image
         // initialization
         imageFiles.push(SVGStringToFile(trimmedText));
+        isSVGCodePaste = true;
       }
     }
 
     if (imageFiles.length > 0) {
       if (this.app.isToolSupported("image")) {
-        await this.app.insertImages(imageFiles, sceneX, sceneY);
+        await this.app.insertImages(
+          imageFiles,
+          sceneX,
+          sceneY,
+          isSVGCodePaste ? "svg_paste" : "paste",
+        );
       } else {
         this.app.setState({ errorMessage: t("errors.imageToolNotSupported") });
       }
@@ -223,6 +231,16 @@ export class AppClipboard {
               : "center",
         });
 
+        if (elements.length) {
+          trackPendoEvent("mermaid_diagram_inserted", {
+            source: "clipboard_paste",
+            elementCount: elements.length,
+            diagramType: getMermaidDiagramType(data.text),
+            definitionLength: data.text.length,
+            autoFixApplied: false,
+          });
+        }
+
         return;
       } catch (err: any) {
         console.warn(
@@ -260,6 +278,8 @@ export class AppClipboard {
             : sceneX,
           sceneY,
           link: normalizeLink(url),
+          source: "paste",
+          embedCount: embbeddableUrls.length,
         });
         if (embeddable) {
           embeddables.push(embeddable);
@@ -398,7 +418,12 @@ export class AppClipboard {
       const imageFiles = responses
         .filter((response): response is { file: File } => !!response.file)
         .map((response) => response.file);
-      await this.app.insertImages(imageFiles, sceneX, sceneY);
+      await this.app.insertImages(
+        imageFiles,
+        sceneX,
+        sceneY,
+        "image_url_paste",
+      );
       const error = responses.find((response) => !!response.errorMessage);
       if (error && error.errorMessage) {
         this.app.setState({ errorMessage: error.errorMessage });

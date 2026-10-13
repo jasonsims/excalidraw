@@ -4,6 +4,9 @@ import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
 
 import { useAtom, useAtomValue } from "../../editor-jotai";
 
+import { trackPendoEvent } from "../../analytics";
+import { getMermaidDiagramType } from "../../mermaid";
+
 import { useApp, useExcalidrawSetAppState } from "../App";
 
 import { useChatAgent } from "./Chat";
@@ -98,6 +101,27 @@ const TextToDiagramContent = ({
     }
   };
 
+  const trackDiagramInserted = (
+    insertSource: "chat_message" | "preview_panel",
+    elementCount: number,
+    mermaidDefinition: string,
+  ) => {
+    let generationAttempts = 0;
+    for (const message of chatHistory.messages) {
+      if (message.type === "assistant") {
+        generationAttempts++;
+      }
+    }
+    trackPendoEvent("ai_diagram_inserted", {
+      insertSource,
+      elementCount,
+      diagramType: getMermaidDiagramType(mermaidDefinition),
+      chatMessageCount: chatHistory.messages.length,
+      generationAttempts,
+      chatId: chatHistory.id,
+    });
+  };
+
   const handleInsertMessage = async (message: TChat.ChatMessage) => {
     const mermaidContent = message.content || "";
     if (!mermaidContent.trim() || !mermaidToExcalidrawLib.loaded) {
@@ -121,12 +145,19 @@ const TextToDiagramContent = ({
     });
 
     if (result.success) {
-      insertToEditor({
+      const isInserted = insertToEditor({
         app,
         data: tempDataRef,
         text: mermaidContent,
         shouldSaveMermaidDataToStorage: true,
       });
+      if (isInserted) {
+        trackDiagramInserted(
+          "chat_message",
+          tempDataRef.current.elements.length,
+          mermaidContent,
+        );
+      }
     }
   };
 
@@ -164,7 +195,13 @@ const TextToDiagramContent = ({
   };
 
   const handleInsertToEditor = () => {
-    insertToEditor({ app, data });
+    if (insertToEditor({ app, data })) {
+      trackDiagramInserted(
+        "preview_panel",
+        data.current.elements.length,
+        lastAssistantMessage?.content ?? "",
+      );
+    }
   };
 
   const handleDeleteMessage = (messageId: string) => {

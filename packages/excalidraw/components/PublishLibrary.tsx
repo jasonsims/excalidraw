@@ -10,6 +10,7 @@ import {
   getExportSource,
 } from "@excalidraw/common";
 
+import { trackPendoEvent } from "../analytics";
 import { EditorLocalStorage } from "../data/EditorLocalStorage";
 import { canvasToBlob, resizeImageFile } from "../data/blob";
 import { t } from "../i18n";
@@ -258,6 +259,24 @@ const PublishLibrary = ({
   const onSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setIsSubmitting(true);
+
+    // presence flags only — the author's name/handles/website are personal data
+    const trackLibraryPublished = (details: {
+      success: boolean;
+      validationErrorCount?: number;
+      errorMessage?: string;
+    }) => {
+      trackPendoEvent("library_published", {
+        itemCount: clonedLibItems.length,
+        isRepublish: libraryItems.some((item) => item.status === "published"),
+        descriptionLength: libraryData.description?.trim().length ?? 0,
+        hasGithubHandle: !!libraryData.githubHandle?.trim(),
+        hasTwitterHandle: !!libraryData.twitterHandle?.trim(),
+        hasWebsite: !!libraryData.website?.trim(),
+        ...details,
+      });
+    };
+
     const erroredLibItems: LibraryItem[] = [];
     let isError = false;
     clonedLibItems.forEach((libItem) => {
@@ -272,6 +291,12 @@ const PublishLibrary = ({
     if (isError) {
       setClonedLibItems(erroredLibItems);
       setIsSubmitting(false);
+      trackLibraryPublished({
+        success: false,
+        validationErrorCount: erroredLibItems.filter((item) => item.error)
+          .length,
+        errorMessage: "validation_failed",
+      });
       return;
     }
 
@@ -313,6 +338,7 @@ const PublishLibrary = ({
                 authorName: libraryData.authorName,
                 items: clonedLibItems,
               });
+              trackLibraryPublished({ success: true });
             });
           }
           return response
@@ -328,12 +354,14 @@ const PublishLibrary = ({
         },
         (err) => {
           console.error(err);
+          trackLibraryPublished({ success: false, errorMessage: err?.message });
           onError(err);
           setIsSubmitting(false);
         },
       )
       .catch((err) => {
         console.error(err);
+        trackLibraryPublished({ success: false, errorMessage: err?.message });
         onError(err);
         setIsSubmitting(false);
       });

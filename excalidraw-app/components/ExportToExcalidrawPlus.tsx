@@ -2,7 +2,11 @@ import React from "react";
 import { uploadBytes, ref } from "firebase/storage";
 import { nanoid } from "nanoid";
 
-import { trackEvent } from "@excalidraw/excalidraw/analytics";
+import {
+  getImageFileCount,
+  trackEvent,
+  trackPendoEvent,
+} from "@excalidraw/excalidraw/analytics";
 import { Card } from "@excalidraw/excalidraw/components/Card";
 import { ExcalidrawLogo } from "@excalidraw/excalidraw/components/ExcalidrawLogo";
 import { IconButton } from "@excalidraw/excalidraw/components/IconButton";
@@ -25,11 +29,14 @@ import type {
   BinaryFiles,
 } from "@excalidraw/excalidraw/types";
 
-import { FILE_UPLOAD_MAX_BYTES } from "../app_constants";
+import {
+  FILE_UPLOAD_MAX_BYTES,
+  isExcalidrawPlusSignedUser,
+} from "../app_constants";
 import { encodeFilesForUpload } from "../data/FileManager";
 import { loadFirebaseStorage, saveFilesToFirebase } from "../data/firebase";
 
-export const exportToExcalidrawPlus = async (
+const uploadSceneToExcalidrawPlus = async (
   elements: readonly NonDeletedExcalidrawElement[],
   appState: Partial<AppState>,
   files: BinaryFiles,
@@ -87,6 +94,38 @@ export const exportToExcalidrawPlus = async (
   );
 };
 
+export const exportToExcalidrawPlus = async (
+  elements: readonly NonDeletedExcalidrawElement[],
+  appState: Partial<AppState>,
+  files: BinaryFiles,
+  name: string,
+  /** where the export was started from (analytics only) */
+  source: "export_dialog" | "overwrite_confirm" | "command_palette",
+) => {
+  // never send the import URL — it contains the encryption key
+  const trackExport = (error?: Error) => {
+    trackPendoEvent("excalidraw_plus_export_completed", {
+      source,
+      elementCount: elements.length,
+      imageFileCount: getImageFileCount(elements),
+      isExcalidrawPlusSignedUser,
+      success: !error,
+      errorMessage: error?.message,
+      frame: getFrame(),
+    });
+  };
+
+  try {
+    await uploadSceneToExcalidrawPlus(elements, appState, files, name);
+    trackExport();
+  } catch (error: any) {
+    if (error?.name !== "AbortError") {
+      trackExport(error);
+    }
+    throw error;
+  }
+};
+
 export const ExportToExcalidrawPlus: React.FC<{
   elements: readonly NonDeletedExcalidrawElement[];
   appState: Partial<AppState>;
@@ -120,7 +159,13 @@ export const ExportToExcalidrawPlus: React.FC<{
         onClick={async () => {
           try {
             trackEvent("export", "eplus", `ui (${getFrame()})`);
-            await exportToExcalidrawPlus(elements, appState, files, name);
+            await exportToExcalidrawPlus(
+              elements,
+              appState,
+              files,
+              name,
+              "export_dialog",
+            );
             onSuccess();
           } catch (error: any) {
             console.error(error);

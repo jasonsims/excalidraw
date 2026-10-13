@@ -11,7 +11,7 @@ import type { MaybePromise } from "@excalidraw/common/utility-types";
 
 import { cleanAppStateForExport, clearAppStateForDatabase } from "../appState";
 
-import { isImageFileHandle, loadFromBlob } from "./blob";
+import { getMimeType, isImageFileHandle, loadFromBlob } from "./blob";
 import { fileOpen, fileSave } from "./filesystem";
 
 import type { AppState, BinaryFiles, LibraryItems } from "../types";
@@ -109,7 +109,11 @@ export const loadFromJSON = async (
     // gets resolved. Else, iOS users cannot open `.excalidraw` files.
     // extensions: ["json", "excalidraw", "png", "svg"],
   });
-  return loadFromBlob(file, localAppState, localElements, file.handle);
+  return {
+    ...(await loadFromBlob(file, localAppState, localElements, file.handle)),
+    /** mime type of the opened file (scene JSON, or PNG/SVG with a scene) */
+    mimeType: getMimeType(file),
+  };
 };
 
 export const isValidExcalidrawData = (data?: {

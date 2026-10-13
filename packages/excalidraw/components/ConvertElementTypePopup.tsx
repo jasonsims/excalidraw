@@ -81,7 +81,7 @@ import type {
 
 import type { Scene } from "@excalidraw/element";
 
-import { trackEvent } from "../analytics";
+import { trackEvent, trackPendoEvent } from "../analytics";
 import { atom } from "../editor-jotai";
 
 import "./ConvertElementTypePopup.scss";
@@ -357,6 +357,7 @@ const Panel = ({
                 nextType: type as
                   | ConvertibleGenericTypes
                   | ConvertibleLinearTypes,
+                source: "popup",
               });
               panelRef.current?.focus();
             }}
@@ -421,10 +422,13 @@ export const convertElementTypes = (
     conversionType,
     nextType,
     direction = "right",
+    source,
   }: {
     conversionType: ConversionType;
     nextType?: ConvertibleTypes;
     direction?: "left" | "right";
+    /** how the conversion was triggered (analytics only) */
+    source?: "popup" | "keyboard";
   },
 ): boolean => {
   if (!conversionType) {
@@ -439,6 +443,25 @@ export const convertElementTypes = (
   );
 
   const advancement = direction === "right" ? 1 : -1;
+
+  const trackElementTypeConverted = (
+    toType: ConvertibleTypes,
+    fromType: string | null,
+    elementCount: number,
+  ) => {
+    if (!elementCount) {
+      return;
+    }
+    trackPendoEvent("element_type_converted", {
+      conversionType,
+      nextType: toType,
+      fromType: fromType ?? "mixed",
+      elementCount,
+      source,
+      // only meaningful when cycling through types with Tab/Shift+Tab
+      direction: source === "keyboard" ? direction : undefined,
+    });
+  };
 
   if (conversionType === "generic") {
     const convertibleGenericElements =
@@ -513,6 +536,12 @@ export const convertElementTypes = (
           }),
         };
       });
+
+      trackElementTypeConverted(
+        nextType,
+        sameType ? convertibleGenericElements[0]?.type ?? null : null,
+        convertibleGenericElements.length,
+      );
     }
   }
 
@@ -520,12 +549,12 @@ export const convertElementTypes = (
     const convertibleLinearElements =
       filterLinearConvertibleElements(selectedElements);
 
-    if (!nextType) {
-      const commonSubType = reduceToCommonValue(
-        convertibleLinearElements,
-        getLinearElementSubType,
-      );
+    const commonSubType = reduceToCommonValue(
+      convertibleLinearElements,
+      getLinearElementSubType,
+    );
 
+    if (!nextType) {
       const index = commonSubType ? LINEAR_TYPES.indexOf(commonSubType) : -1;
       nextType =
         LINEAR_TYPES[
@@ -614,6 +643,12 @@ export const convertElementTypes = (
           }
         }
       }
+
+      trackElementTypeConverted(
+        nextType,
+        commonSubType ?? null,
+        convertibleLinearElements.length,
+      );
     }
 
     const convertedSelectedLinearElements = filterLinearConvertibleElements(

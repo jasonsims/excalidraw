@@ -9,11 +9,13 @@ import {
   TTDStreamFetch,
 } from "@excalidraw/excalidraw";
 import { getDataURL } from "@excalidraw/excalidraw/data/blob";
+import { trackPendoEvent } from "@excalidraw/excalidraw/analytics";
 import { safelyParseJSON } from "@excalidraw/common";
 
 import type { StreamChunk } from "@excalidraw/excalidraw";
 import type { ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
 
+import { isExcalidrawPlusSignedUser } from "../app_constants";
 import { TTDIndexedDBAdapter } from "../data/TTDStorage";
 
 export const AIComponents = ({
@@ -77,7 +79,14 @@ export const AIComponents = ({
             }
 
             if (errorJSON.statusCode === 429) {
+              trackPendoEvent("ai_usage_limit_reached", {
+                feature: "diagram_to_code",
+                limitType: "rate_limit",
+                errorStatus: 429,
+                isExcalidrawPlusSignedUser,
+              });
               return {
+                rateLimited: true,
                 html: `<html>
                 <body style="margin: 0; text-align: center">
                 <div style="display: flex; align-items: center; justify-content: center; flex-direction: column; height: 100vh; padding: 0 60px">

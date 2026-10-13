@@ -1,3 +1,4 @@
+import { trackPendoEvent } from "@excalidraw/excalidraw/analytics";
 import { useI18n, languages } from "@excalidraw/excalidraw/i18n";
 import React from "react";
 
@@ -12,7 +13,15 @@ export const LanguageList = ({ style }: { style?: React.CSSProperties }) => {
   return (
     <select
       className="dropdown-select dropdown-select__language"
-      onChange={({ target }) => setLangCode(target.value)}
+      onChange={({ target }) => {
+        trackPendoEvent("language_changed", {
+          fromLangCode: langCode,
+          toLangCode: target.value,
+          detectedLangCode:
+            target.ownerDocument.defaultView?.navigator.language,
+        });
+        setLangCode(target.value);
+      }}
       value={langCode}
       aria-label={t("buttons.selectLanguage")}
       style={style}

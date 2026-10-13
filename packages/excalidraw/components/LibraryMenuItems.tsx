@@ -17,6 +17,7 @@ import { duplicateElements } from "@excalidraw/element";
 
 import clsx from "clsx";
 
+import { trackPendoEvent } from "../analytics";
 import { deburr } from "../deburr";
 
 import { useLibraryCache } from "../hooks/useLibraryItemSvg";
@@ -37,7 +38,7 @@ import "./LibraryMenuItems.scss";
 
 import { TextField } from "./TextField";
 
-import { useEditorInterface } from "./App";
+import { useApp, useEditorInterface } from "./App";
 
 import { Button } from "./Button";
 
@@ -56,6 +57,8 @@ const ITEMS_RENDERED_PER_BATCH = 17;
 // when render outputs cached we can render many more items per batch to
 // speed it up
 const CACHED_ITEMS_RENDERED_PER_BATCH = 64;
+// how long the search input has to be idle before a search is tracked
+const LIBRARY_SEARCH_TRACKING_DELAY_MS = 500;
 
 export default function LibraryMenuItems({
   isLoading,
@@ -72,7 +75,10 @@ export default function LibraryMenuItems({
   isLoading: boolean;
   libraryItems: LibraryItems;
   pendingElements: LibraryItem["elements"];
-  onInsertLibraryItems: (libraryItems: LibraryItems) => void;
+  onInsertLibraryItems: (
+    libraryItems: LibraryItems,
+    opts?: { fromSearch: boolean },
+  ) => void;
   onAddToLibrary: (elements: LibraryItem["elements"]) => void;
   libraryReturnUrl: ExcalidrawProps["libraryReturnUrl"];
   theme: UIAppState["theme"];
@@ -81,6 +87,7 @@ export default function LibraryMenuItems({
   onSelectItems: (id: LibraryItem["id"][]) => void;
 }) {
   const editorInterface = useEditorInterface();
+  const app = useApp();
   const libraryContainerRef = useRef<HTMLDivElement>(null);
   const scrollPosition = useScrollPosition<HTMLDivElement>(libraryContainerRef);
 
@@ -115,6 +122,30 @@ export default function LibraryMenuItems({
       );
     });
   }, [libraryItems, searchInputValue]);
+
+  // track each settled search (once typing stops) — never the query itself
+  const lastTrackedSearchQueryRef = useRef("");
+  useEffect(() => {
+    const searchQuery = searchInputValue.trim();
+    if (!searchQuery) {
+      lastTrackedSearchQueryRef.current = "";
+      return;
+    }
+    if (searchQuery === lastTrackedSearchQueryRef.current) {
+      return;
+    }
+    const { ownerWindow } = app;
+    const timer = ownerWindow.setTimeout(() => {
+      lastTrackedSearchQueryRef.current = searchQuery;
+      trackPendoEvent("library_searched", {
+        queryLength: searchQuery.length,
+        resultsCount: filteredItems.length,
+        totalLibraryItems: libraryItems.length,
+        zeroResults: !filteredItems.length,
+      });
+    }, LIBRARY_SEARCH_TRACKING_DELAY_MS);
+    return () => ownerWindow.clearTimeout(timer);
+  }, [app, searchInputValue, filteredItems, libraryItems.length]);
 
   const unpublishedItems = useMemo(
     () => libraryItems.filter((item) => item.status !== "published"),
@@ -244,10 +275,12 @@ export default function LibraryMenuItems({
   const onItemClick = useCallback(
     (id: LibraryItem["id"] | null) => {
       if (id) {
-        onInsertLibraryItems(getInsertedElements(id));
+        onInsertLibraryItems(getInsertedElements(id), {
+          fromSearch: IS_SEARCHING,
+        });
       }
     },
-    [getInsertedElements, onInsertLibraryItems],
+    [getInsertedElements, onInsertLibraryItems, IS_SEARCHING],
   );
 
   const itemsRenderedPerBatch =

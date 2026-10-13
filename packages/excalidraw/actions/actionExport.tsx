@@ -12,9 +12,16 @@ import { Toast } from "../components/Toast";
 import { IconButton } from "../components/IconButton";
 import { Tooltip } from "../components/Tooltip";
 import { ExportIcon, questionCircle, saveAs } from "../components/icons";
+import {
+  getImageFileCount,
+  getNonDeletedElementCount,
+  getSceneFileType,
+  trackPendoEvent,
+} from "../analytics";
 import { loadFromJSON, saveAsJSON } from "../data";
-import { isImageFileHandle } from "../data/blob";
+import { getFileHandleType, isImageFileHandle } from "../data/blob";
 import { nativeFileSystemSupported } from "../data/filesystem";
+import { ImageSceneDataError } from "../errors";
 
 import { resaveAsImageWithScene } from "../data/resave";
 
@@ -33,6 +40,7 @@ import type {
   ExcalidrawProps,
   OnExportProgress,
 } from "../types";
+import type { ActionSource } from "./types";
 
 export const actionChangeProjectName = register<AppState["name"]>({
   name: "changeProjectName",
@@ -250,6 +258,34 @@ function prepareDataForJSONExport(
 // Save actions
 // ---------------------------------------------------------------------------
 
+const trackSceneFileSaved = ({
+  saveMethod,
+  fileFormat,
+  isOverwrite,
+  elements,
+  source,
+  error,
+}: {
+  saveMethod: "save" | "save_as";
+  fileFormat: string;
+  isOverwrite: boolean;
+  elements: readonly ExcalidrawElement[];
+  source: ActionSource | undefined;
+  error?: Error;
+}) => {
+  trackPendoEvent("scene_file_saved", {
+    saveMethod,
+    fileFormat,
+    isOverwrite,
+    elementCount: getNonDeletedElementCount(elements),
+    imageFileCount: getImageFileCount(elements),
+    nativeFileSystemSupported,
+    source,
+    success: !error,
+    errorName: error?.name,
+  });
+};
+
 export const actionSaveToActiveFile = register({
   name: "saveToActiveFile",
   label: "buttons.save",
@@ -262,7 +298,7 @@ export const actionSaveToActiveFile = register({
       !appState.viewModeEnabled
     );
   },
-  perform: async (elements, appState, value, app) => {
+  perform: async (elements, appState, value, app, source) => {
     if (onExportInProgress) {
       return false;
     }
@@ -273,6 +309,16 @@ export const actionSaveToActiveFile = register({
 
     const { abortController, data: exportedDataPromise } =
       prepareDataForJSONExport(elements, appState, app.files, app);
+
+    const trackingProps = {
+      saveMethod: "save",
+      fileFormat: isImageFileHandle(previousFileHandle)
+        ? getFileHandleType(previousFileHandle) ?? "image"
+        : "excalidraw",
+      isOverwrite: !!previousFileHandle,
+      elements,
+      source,
+    } as const;
 
     try {
       const { fileHandle } = isImageFileHandle(previousFileHandle)
@@ -286,6 +332,8 @@ export const actionSaveToActiveFile = register({
             filename,
             fileHandle: previousFileHandle,
           });
+
+      trackSceneFileSaved(trackingProps);
 
       return {
         captureUpdate: CaptureUpdateAction.NEVER,
@@ -308,6 +356,7 @@ export const actionSaveToActiveFile = register({
 
       if (error?.name !== "AbortError") {
         console.error(error);
+        trackSceneFileSaved({ ...trackingProps, error });
       } else {
         console.warn(error);
       }
@@ -331,7 +380,7 @@ export const actionSaveFileToDisk = register({
   icon: ExportIcon,
   viewMode: true,
   trackEvent: { category: "export" },
-  perform: async (elements, appState, value, app) => {
+  perform: async (elements, appState, value, app, source) => {
     if (onExportInProgress) {
       return false;
     }
@@ -340,12 +389,22 @@ export const actionSaveFileToDisk = register({
     const { abortController, data: exportedDataPromise } =
       prepareDataForJSONExport(elements, appState, app.files, app);
 
+    const trackingProps = {
+      saveMethod: "save_as",
+      fileFormat: "excalidraw",
+      isOverwrite: false,
+      elements,
+      source,
+    } as const;
+
     try {
       const { fileHandle: savedFileHandle } = await saveAsJSON({
         data: exportedDataPromise,
         filename: app.getName(),
         fileHandle: null,
       });
+
+      trackSceneFileSaved(trackingProps);
 
       return {
         captureUpdate: CaptureUpdateAction.NEVER,
@@ -359,6 +418,7 @@ export const actionSaveFileToDisk = register({
       abortController.abort();
       if (error?.name !== "AbortError") {
         console.error(error);
+        trackSceneFileSaved({ ...trackingProps, error });
       } else {
         console.warn(error);
       }
@@ -400,12 +460,23 @@ export const actionLoadScene = register({
     );
   },
   perform: async (elements, appState, _, app) => {
+    const replacedExistingScene = getNonDeletedElementCount(elements) > 0;
     try {
       const {
         elements: loadedElements,
         appState: loadedAppState,
         files,
+        mimeType,
       } = await loadFromJSON(appState, elements);
+      trackPendoEvent("scene_file_opened", {
+        openMethod: "file_picker",
+        fileType: getSceneFileType(mimeType),
+        elementCount: getNonDeletedElementCount(loadedElements),
+        imageFileCount: getImageFileCount(loadedElements),
+        replacedExistingScene,
+        insertedAtCursor: false,
+        success: true,
+      });
       return {
         elements: loadedElements,
         appState: loadedAppState,
@@ -417,6 +488,16 @@ export const actionLoadScene = register({
         console.warn(error);
         return false;
       }
+      trackPendoEvent("scene_file_opened", {
+        openMethod: "file_picker",
+        replacedExistingScene: false,
+        insertedAtCursor: false,
+        success: false,
+        errorType:
+          error instanceof ImageSceneDataError
+            ? "cannot_restore_from_image"
+            : "invalid_file",
+      });
       return {
         elements,
         appState: { ...appState, errorMessage: error.message },

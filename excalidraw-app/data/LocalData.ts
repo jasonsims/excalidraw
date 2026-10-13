@@ -10,6 +10,7 @@
  *   (localStorage, indexedDB).
  */
 
+import { trackPendoEvent } from "@excalidraw/excalidraw/analytics";
 import { clearAppStateForLocalStorage } from "@excalidraw/excalidraw/appState";
 import {
   CANVAS_SEARCH_TAB,
@@ -104,12 +105,43 @@ const saveDataStateToLocalStorage = (
     console.error(error);
     if (isQuotaExceededError(error) && !localStorageQuotaExceeded) {
       appJotaiStore.set(localStorageQuotaExceededAtom, true);
+      trackLocalStorageQuotaExceeded(elements, appState);
     }
   }
 };
 
 const isQuotaExceededError = (error: any) => {
   return error instanceof DOMException && error.name === "QuotaExceededError";
+};
+
+/** fired once per transition into the quota-exceeded state */
+const trackLocalStorageQuotaExceeded = async (
+  elements: readonly ExcalidrawElement[],
+  appState: AppState,
+) => {
+  try {
+    const getByteLength = (data: unknown) =>
+      new TextEncoder().encode(JSON.stringify(data)).length;
+
+    const nonDeletedElements = getNonDeletedElements(elements);
+    const elementsPayloadBytes = getByteLength(nonDeletedElements);
+    const appStatePayloadBytes = getByteLength(
+      clearAppStateForLocalStorage(appState),
+    );
+    const storageUsageEstimate = await navigator.storage
+      ?.estimate?.()
+      .then((estimate) => estimate.usage)
+      .catch(() => undefined);
+
+    trackPendoEvent("local_storage_quota_exceeded", {
+      elementCount: nonDeletedElements.length,
+      elementsPayloadBytes,
+      appStatePayloadBytes,
+      storageUsageEstimate,
+    });
+  } catch (error: any) {
+    console.error(error);
+  }
 };
 
 type SavingLockTypes = "collaboration";

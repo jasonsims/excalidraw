@@ -42,6 +42,8 @@ export const STORAGE_KEYS = {
   LOCAL_STORAGE_COLLAB: "excalidraw-collab",
   LOCAL_STORAGE_THEME: "excalidraw-theme",
   LOCAL_STORAGE_DEBUG: "excalidraw-debug",
+  /** whether `first_element_created` was already tracked in this browser */
+  LOCAL_STORAGE_FIRST_ELEMENT_CREATED: "excalidraw-first-element-created",
   VERSION_DATA_STATE: "version-dataState",
   VERSION_FILES: "version-files",
 

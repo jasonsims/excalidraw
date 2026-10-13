@@ -3,6 +3,7 @@ import { deepCopyElement } from "@excalidraw/element";
 
 import { CaptureUpdateAction } from "@excalidraw/element";
 
+import { getElementTypes, trackPendoEvent } from "../analytics";
 import { t } from "../i18n";
 
 import { register } from "./register";
@@ -10,15 +11,29 @@ import { register } from "./register";
 export const actionAddToLibrary = register({
   name: "addToLibrary",
   trackEvent: { category: "element" },
-  perform: (elements, appState, _, app) => {
+  perform: (elements, appState, _, app, source) => {
     const selectedElements = app.scene.getSelectedElements({
       selectedElementIds: appState.selectedElementIds,
       includeBoundTextElement: true,
       includeElementsInFrames: true,
     });
 
+    const trackLibraryItemAdded = (details: {
+      totalLibraryItems?: number;
+      success: boolean;
+      rejectedElementType?: string;
+    }) => {
+      trackPendoEvent("library_item_added", {
+        elementCount: selectedElements.length,
+        elementTypes: getElementTypes(selectedElements),
+        source,
+        ...details,
+      });
+    };
+
     for (const type of LIBRARY_DISABLED_TYPES) {
       if (selectedElements.some((element) => element.type === type)) {
+        trackLibraryItemAdded({ success: false, rejectedElementType: type });
         return {
           captureUpdate: CaptureUpdateAction.EVENTUALLY,
           appState: {
@@ -42,7 +57,11 @@ export const actionAddToLibrary = register({
           ...items,
         ]);
       })
-      .then(() => {
+      .then((items) => {
+        trackLibraryItemAdded({
+          totalLibraryItems: items.length,
+          success: true,
+        });
         return {
           captureUpdate: CaptureUpdateAction.EVENTUALLY,
           appState: {
@@ -52,6 +71,7 @@ export const actionAddToLibrary = register({
         };
       })
       .catch((error) => {
+        trackLibraryItemAdded({ success: false });
         return {
           captureUpdate: CaptureUpdateAction.EVENTUALLY,
           appState: {

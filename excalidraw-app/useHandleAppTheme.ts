@@ -1,5 +1,6 @@
 import { THEME } from "@excalidraw/excalidraw";
-import { useEffect, useLayoutEffect, useState } from "react";
+import { trackPendoEvent } from "@excalidraw/excalidraw/analytics";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { Theme } from "@excalidraw/element/types";
 
@@ -18,6 +19,9 @@ export const useHandleAppTheme = () => {
     );
   });
   const [editorTheme, setEditorTheme] = useState<Theme>(THEME.LIGHT);
+  // every theme change (toggle action, shortcut, main menu) ends up here.
+  // Initialized with the restored theme so the initial mount isn't tracked.
+  const prevAppThemeRef = useRef(appTheme);
 
   useEffect(() => {
     const mediaQuery = getDarkThemeMediaQuery();
@@ -38,12 +42,21 @@ export const useHandleAppTheme = () => {
   useLayoutEffect(() => {
     localStorage.setItem(STORAGE_KEYS.LOCAL_STORAGE_THEME, appTheme);
 
-    if (appTheme === "system") {
-      setEditorTheme(
-        getDarkThemeMediaQuery()?.matches ? THEME.DARK : THEME.LIGHT,
-      );
-    } else {
-      setEditorTheme(appTheme);
+    const nextEditorTheme =
+      appTheme === "system"
+        ? getDarkThemeMediaQuery()?.matches
+          ? THEME.DARK
+          : THEME.LIGHT
+        : appTheme;
+    setEditorTheme(nextEditorTheme);
+
+    if (prevAppThemeRef.current !== appTheme) {
+      trackPendoEvent("theme_changed", {
+        newTheme: appTheme,
+        previousTheme: prevAppThemeRef.current,
+        resolvedEditorTheme: nextEditorTheme,
+      });
+      prevAppThemeRef.current = appTheme;
     }
   }, [appTheme]);
 
