@@ -42,6 +42,12 @@ Open a PR from the `sync/*` branch into `deploy`, check the Vercel preview, then
 - Mark unavoidable edits to upstream files with a `// FORK:` comment so `grep -rn "FORK:"` finds them all.
 - Contribute generic fixes upstream so they stop being this fork's burden.
 
+## Claude Code instructions
+
+`CLAUDE.md` and `AGENTS.md` are upstream's files. Do not edit them, because any change conflicts on the next sync. Fork-specific instructions for Claude Code live in `.claude/rules/fork.md`, which Claude Code loads alongside `CLAUDE.md`.
+
+`.claude` is in upstream's `.gitignore`. The rules file was added with `git add -f`, so it is tracked and edits to it show up normally. A new file under `.claude/` also needs `git add -f`. This avoids editing upstream's `.gitignore`.
+
 ## Deployment
 
 - Host: Vercel, project imported from this repo.
@@ -51,6 +57,89 @@ Open a PR from the `sync/*` branch into `deploy`, check the Vercel preview, then
 - Environment variables:
   - `VITE_APP_DISABLE_SENTRY=true`
 - `VITE_APP_*` values are baked in at build time, so changing them needs a new build.
+
+## Testing the build locally
+
+Do this before pushing to `deploy` and after every upstream sync.
+
+### Prerequisites
+
+- Node.js 22 or 24 (the repo's `Dockerfile` builds on Node 24). `package.json` only requires `>=18`, but use a current version to match Vercel. `nvm install 24 && nvm use 24`
+- Yarn classic (1.22.x), as pinned by `packageManager` in `package.json`. `corepack enable` (or `npm i -g yarn`)
+
+### Production build (same steps Vercel runs)
+
+```bash
+yarn install
+VITE_APP_DISABLE_SENTRY=true yarn build
+```
+
+- `yarn build` runs `vite build` in `excalidraw-app/` and then writes `build/version.json`.
+- Output goes to `excalidraw-app/build/`. That is the directory Vercel serves.
+- Setting `VITE_APP_DISABLE_SENTRY=true` matches the Vercel environment variable.
+- The build needs a lot of memory. If it dies with an out-of-memory error, run it with `NODE_OPTIONS=--max-old-space-size=4096`.
+
+### Serve the production build
+
+```bash
+yarn --cwd excalidraw-app build:preview   # builds, then serves on http://localhost:5000
+```
+
+To serve an existing build without rebuilding:
+
+```bash
+cd excalidraw-app && npx vite preview --port 5000
+```
+
+### Dev server (not a production check)
+
+```bash
+yarn start   # http://localhost:3000 by default, or VITE_APP_PORT if set
+```
+
+### Docker build (optional)
+
+Builds with `yarn build:app:docker` (Sentry disabled) and serves with nginx:
+
+```bash
+docker build -t excalidraw-fork .
+docker run --rm -p 3000:80 excalidraw-fork   # http://localhost:3000
+```
+
+### Checks to run before committing
+
+```bash
+yarn test:typecheck   # TypeScript
+yarn test:update      # unit tests (updates snapshots)
+yarn test:code        # eslint
+yarn test:other       # prettier
+yarn fix              # auto-fix formatting and lint issues
+```
+
+### Smoke test checklist
+
+Open the built app and check:
+
+- [ ] Page loads with no errors in the browser console
+- [ ] Draw a rectangle, an arrow, and some text
+- [ ] Hand-drawn fonts render (not a fallback font)
+- [ ] Reload the page, and the drawing is still there (local autosave)
+- [ ] Export to PNG and SVG works
+- [ ] Save to file, then load the file back
+- [ ] Dark mode toggle works
+
+Expected to **not** work until backends are set up (see Backends): live collaboration, shareable links, and the AI features. Don't count those as build failures.
+
+### Troubleshooting
+
+| Symptom | Likely cause and fix |
+| --- | --- |
+| `yarn: command not found` | Run `corepack enable`, or `npm i -g yarn`. |
+| Odd syntax or engine errors during install or build | Wrong Node version. Check `node -v` and switch to 22 or 24. |
+| `Cannot find module @rollup/rollup-...` | Optional dependencies were skipped. Remove `node_modules` and run `yarn install` again without `--ignore-optional`. |
+| Build killed or "heap out of memory" | Use `NODE_OPTIONS=--max-old-space-size=4096`. |
+| Fonts missing on the deployed site only | The CORS headers in `vercel.json` are hardcoded to excalidraw.com. See "Known items to revisit". |
+| Build passes locally but fails on Vercel | Compare the Node version and build command in Vercel settings with this section. |
 
 ## Backends
 
@@ -72,6 +161,7 @@ Add an entry here for every change on `deploy`, with the file(s) and the reason.
 | 2026-10-13 | `packages/excalidraw/analytics.ts`, `packages/excalidraw/components/TTDDialog/*` | `trackAgent` helper, and Pendo agent analytics on the text-to-diagram chat (prompt, response, retry and undo reactions). | Agent analytics for the AI chat. |
 | 2026-10-13 | `packages/excalidraw/global.d.ts` | The only declaration of `Window.pendo`, with `initialize`, `track` and `trackAgent`. `excalidraw-app/global.d.ts` is identical to upstream. | Two separate declarations of `Window.pendo` conflicted and broke the typecheck and the production build. |
 | 2026-10-13 | About 50 files in `excalidraw-app/` and `packages/excalidraw/` (`analytics.ts`, actions, `App.tsx`, collab, library, TTD, export) | Pendo track events through `trackPendoEvent`, 45 named events, plus optional `source` arguments on a few internal functions. `loadFileToCanvas` and `exportToExcalidrawPlus` now require a new argument. | Product analytics on editor and app usage. No URLs, keys or user content are sent. **High conflict risk on upstream sync.** |
+| 2026-10-13 | `.claude/rules/fork.md` (new file) | Fork-specific Claude Code rules, kept separate from upstream's `CLAUDE.md` and `AGENTS.md`. | Lets the fork carry its own agent instructions without conflicting with upstream on sync. |
 
 ## Known items to revisit
 
