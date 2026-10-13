@@ -2,11 +2,14 @@ import { useRef } from "react";
 import { parseMermaidToExcalidraw } from "@excalidraw/mermaid-to-excalidraw";
 import { isFiniteNumber } from "@excalidraw/math";
 
-import { useAtom } from "../../../editor-jotai";
+import { editorJotaiStore, useAtom } from "../../../editor-jotai";
 
-import { trackEvent } from "../../../analytics";
+import { trackAgent, trackEvent } from "../../../analytics";
 import { t } from "../../../i18n";
 
+import { useApp } from "../../App";
+
+import { TTD_AGENT_ID } from "../common";
 import { errorAtom, rateLimitsAtom, chatHistoryAtom } from "../TTDContext";
 import { useChatAgent } from "../Chat";
 
@@ -30,6 +33,7 @@ export const useTextGeneration = ({
     props: TTTDDialog.OnTextSubmitProps,
   ) => Promise<TTTDDialog.OnTextSubmitRetValue>;
 }) => {
+  const app = useApp();
   const [, setError] = useAtom(errorAtom);
   const [rateLimits, setRateLimits] = useAtom(rateLimitsAtom);
   const [chatHistory, setChatHistory] = useAtom(chatHistoryAtom);
@@ -95,8 +99,30 @@ export const useTextGeneration = ({
       );
     }
 
+    // jotai applies the updates above synchronously, so the store already
+    // holds this generation's messages, whose ids we reuse for analytics
+    const latestChatHistory = editorJotaiStore.get(chatHistoryAtom);
+    const userMessage = latestChatHistory.messages.findLast(
+      (msg) => msg.type === "user",
+    );
+    const assistantMessage = getLastAssistantMessage(latestChatHistory);
+
     try {
       trackEvent("ai", "generate", "ttd");
+
+      // repair flows regenerate the last response without a new user message,
+      // and are tracked as a "retry" user_reaction in TextToDiagram instead
+      if (!isRepairFlow && userMessage) {
+        trackAgent(app.ownerWindow, "prompt", {
+          agentId: TTD_AGENT_ID,
+          conversationId: latestChatHistory.id,
+          messageId: userMessage.id,
+          content: prompt,
+          // prompts are always typed by the user, and the chat is text-only
+          suggestedPrompt: false,
+          fileUploaded: false,
+        });
+      }
 
       const previousMessages = getMessagesForLLM(chatHistory);
 
@@ -188,6 +214,15 @@ export const useTextGeneration = ({
         setError(_error);
 
         return;
+      }
+
+      if (assistantMessage) {
+        trackAgent(app.ownerWindow, "agent_response", {
+          agentId: TTD_AGENT_ID,
+          conversationId: latestChatHistory.id,
+          messageId: assistantMessage.id,
+          content: generatedResponse,
+        });
       }
 
       try {

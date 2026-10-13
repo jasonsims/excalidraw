@@ -8,6 +8,10 @@ interface Window {
   gtag: Function;
   sa_event: Function;
   fathom: { trackEvent: Function };
+  /** Pendo agent, present only when the host page installs it */
+  pendo?: {
+    trackAgent: (eventType: string, metadata: object) => void;
+  };
 }
 
 interface CanvasRenderingContext2D {

@@ -48,3 +48,31 @@ export const trackEvent = (
     console.error("error during analytics", error);
   }
 };
+
+/**
+ * Reports a conversational AI agent interaction to Pendo. No-op unless the
+ * host page has loaded the Pendo agent.
+ */
+export const trackAgent = (
+  ownerWindow: Window,
+  eventType: "prompt" | "agent_response" | "user_reaction",
+  metadata: {
+    agentId: string;
+    conversationId: string;
+    messageId: string;
+    /** message text, or the reaction type for `user_reaction` events */
+    content: string;
+    modelUsed?: string;
+    suggestedPrompt?: boolean;
+    toolsUsed?: string[];
+    fileUploaded?: boolean;
+  },
+) => {
+  try {
+    if (ownerWindow.pendo?.trackAgent) {
+      ownerWindow.pendo.trackAgent(eventType, metadata);
+    }
+  } catch (error) {
+    console.error("error during agent analytics", error);
+  }
+};
