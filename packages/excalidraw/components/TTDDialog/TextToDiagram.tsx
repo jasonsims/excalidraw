@@ -4,6 +4,8 @@ import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
 
 import { useAtom, useAtomValue } from "../../editor-jotai";
 
+import { trackAgent } from "../../analytics";
+
 import { useApp, useExcalidrawSetAppState } from "../App";
 
 import { useChatAgent } from "./Chat";
@@ -12,6 +14,7 @@ import {
   convertMermaidToExcalidraw,
   insertToEditor,
   saveMermaidDataToStorage,
+  TTD_AGENT_ID,
 } from "./common";
 import { errorAtom, chatHistoryAtom, showPreviewAtom } from "./TTDContext";
 
@@ -79,6 +82,18 @@ const TextToDiagramContent = ({
     handleMenuClose,
   } = useChatManagement({ persistenceAdapter });
 
+  const trackUserReaction = (
+    assistantMessageId: string,
+    reaction: "retry" | "undo",
+  ) => {
+    trackAgent(app.ownerWindow, "user_reaction", {
+      agentId: TTD_AGENT_ID,
+      conversationId: chatHistory.id,
+      messageId: assistantMessageId,
+      content: reaction,
+    });
+  };
+
   const onViewAsMermaid = () => {
     if (typeof lastAssistantMessage?.content === "string") {
       saveMermaidDataToStorage(lastAssistantMessage.content);
@@ -138,6 +153,8 @@ const TextToDiagramContent = ({
       return;
     }
 
+    trackUserReaction(message.id, "retry");
+
     const repairPrompt = `Fix the error in this Mermaid diagram. The diagram is:\n\n\`\`\`mermaid\n${mermaidContent}\n\`\`\`\n\nThe exception/error is: ${errorMessage}\n\nPlease fix the Mermaid syntax and regenerate a valid diagram.`;
 
     await onGenerate({ prompt: repairPrompt, isRepairFlow: true });
@@ -154,6 +171,7 @@ const TextToDiagramContent = ({
         previousMessage.type === "user" &&
         typeof previousMessage.content === "string"
       ) {
+        trackUserReaction(message.id, "retry");
         setLastRetryAttempt();
         await onGenerate({
           prompt: previousMessage.content,
@@ -168,6 +186,10 @@ const TextToDiagramContent = ({
   };
 
   const handleDeleteMessage = (messageId: string) => {
+    // deleting a response also removes its prompt and everything after it,
+    // reverting the conversation to before that exchange
+    trackUserReaction(messageId, "undo");
+
     const assistantMessageIndex = chatHistory.messages.findIndex(
       (msg) => msg.id === messageId && msg.type === "assistant",
     );
