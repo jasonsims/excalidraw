@@ -5,7 +5,7 @@ interface Window {
   __EXCALIDRAW_SHA__: string | undefined;
 }
 
-// Novus by Pendo web SDK, defined on `window` by the install snippet in
+// FORK: Novus by Pendo web SDK, defined on `window` by the install snippet in
 // index.html. Typed narrowly to what the app calls: an invalid `location`
 // transform attr/action pair throws inside `initialize`, so extend these
 // types deliberately.

@@ -6,6 +6,7 @@ import "../excalidraw-app/sentry";
 
 import ExcalidrawApp from "./App";
 
+// FORK: Novus by Pendo `location` transform, used by `initialize` below.
 // The URL fragment is where Excalidraw keeps end-to-end encryption keys
 // (`#room=<roomId>,<roomKey>`, `#json=<id>,<key>`) so they never reach a
 // server, plus the library-install `token` and external scene URLs. Record
@@ -24,7 +25,7 @@ const stripHashParamValues = (hash: string) => {
 
 window.__EXCALIDRAW_SHA__ = import.meta.env.VITE_APP_GIT_SHA;
 
-// Novus by Pendo: initialize once, anonymously (the app has no sign-in).
+// FORK: Novus by Pendo: initialize once, anonymously (the app has no sign-in).
 window.pendo?.initialize({
   visitor: { id: "" },
   location: {
