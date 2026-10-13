@@ -67,11 +67,11 @@ Only the editor itself is expected to work until backends are set up.
 
 ## Changes from upstream
 
-None yet. Add an entry here for every change on `deploy`, with the file(s) and the reason.
+Add an entry here for every change on `deploy`, with the file(s) and the reason.
 
 | Date | Files | Change | Why |
 | --- | --- | --- | --- |
-| | | | |
+| 2026-10-13 | `excalidraw-app/index.html`, `excalidraw-app/index.tsx`, `excalidraw-app/global.d.ts` | Install the Novus by Pendo web SDK: install snippet in `<head>`, anonymous `pendo.initialize` at app start, `window.pendo` type. A `location` transform records only the URL fragment's parameter names. | Product analytics for this deployment. The fragment carries the collaboration and share-link encryption keys, which must not reach Pendo. |
 
 ## Known items to revisit
 
