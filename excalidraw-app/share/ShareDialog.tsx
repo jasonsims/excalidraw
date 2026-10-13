@@ -1,4 +1,4 @@
-import { trackEvent } from "@excalidraw/excalidraw/analytics";
+import { trackEvent, trackPendoEvent } from "@excalidraw/excalidraw/analytics";
 import { copyTextToSystemClipboard } from "@excalidraw/excalidraw/clipboard";
 import { Dialog } from "@excalidraw/excalidraw/components/Dialog";
 import { FilledButton } from "@excalidraw/excalidraw/components/FilledButton";
@@ -69,11 +69,28 @@ const ActiveRoomDialog = ({
   const ref = useRef<HTMLInputElement>(null);
   const isShareSupported = "share" in navigator;
   const { onCopy, copyStatus } = useCopyStatus();
+  const { collaborators } = useUIAppState();
+
+  // never send the room link — its hash holds the room's encryption key
+  const trackRoomLinkShared = (
+    shareMethod: "copy_link" | "native_share",
+    success: boolean,
+    cancelled = false,
+  ) => {
+    trackPendoEvent("collab_room_link_shared", {
+      shareMethod,
+      success,
+      cancelled,
+      collaboratorCount: collaborators.size,
+    });
+  };
 
   const copyRoomLink = async () => {
     try {
       await copyTextToSystemClipboard(activeRoomLink);
+      trackRoomLinkShared("copy_link", true);
     } catch (e) {
+      trackRoomLinkShared("copy_link", false);
       collabAPI.setCollabError(t("errors.copyToSystemClipboardFailed"));
     }
 
@@ -97,8 +114,10 @@ const ActiveRoomDialog = ({
         text: t("roomDialog.shareTitle"),
         url: activeRoomLink,
       });
+      trackRoomLinkShared("native_share", true);
     } catch (error: any) {
-      // Just ignore.
+      // no error UI — a rejection usually means the share sheet was dismissed
+      trackRoomLinkShared("native_share", false, error?.name === "AbortError");
     }
   };
 
@@ -167,7 +186,7 @@ const ActiveRoomDialog = ({
           icon={playerStopFilledIcon}
           onClick={() => {
             trackEvent("share", "room closed");
-            collabAPI.stopCollaboration();
+            collabAPI.stopCollaboration(true, "share_dialog");
             if (!collabAPI.isCollaborating()) {
               handleClose();
             }
@@ -201,7 +220,9 @@ const ShareDialogPicker = (props: ShareDialogProps) => {
           icon={playerPlayIcon}
           onClick={() => {
             trackEvent("share", "room creation", `ui (${getFrame()})`);
-            collabAPI.startCollaboration(null);
+            collabAPI.startCollaboration(null, {
+              shareDialogType: props.type,
+            });
           }}
         />
       </div>

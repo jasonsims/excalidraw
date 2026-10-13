@@ -1,7 +1,6 @@
 # FORK.md
 
-This is `jasonsims/excalidraw`, a fork of [`excalidraw/excalidraw`](https://github.com/excalidraw/excalidraw).
-This file records how the fork is maintained and every way it differs from upstream.
+This is `jasonsims/excalidraw`, a fork of [`excalidraw/excalidraw`](https://github.com/excalidraw/excalidraw). This file records how the fork is maintained and every way it differs from upstream.
 
 ## Branches
 
@@ -12,9 +11,9 @@ This file records how the fork is maintained and every way it differs from upstr
 
 ## Remotes
 
-| Remote | URL |
-| --- | --- |
-| `origin` | `jasonsims/excalidraw` |
+| Remote     | URL                     |
+| ---------- | ----------------------- |
+| `origin`   | `jasonsims/excalidraw`  |
 | `upstream` | `excalidraw/excalidraw` |
 
 `git rerere` is enabled so conflict resolutions are remembered between syncs.
@@ -33,8 +32,7 @@ git merge master
 yarn test:typecheck && yarn test:update
 ```
 
-Open a PR from the `sync/*` branch into `deploy`, check the Vercel preview, then merge.
-After resolving conflicts, check the "Changes from upstream" list below.
+Open a PR from the `sync/*` branch into `deploy`, check the Vercel preview, then merge. After resolving conflicts, check the "Changes from upstream" list below.
 
 ## Rules for keeping the diff small
 
@@ -56,8 +54,7 @@ After resolving conflicts, check the "Changes from upstream" list below.
 
 ## Backends
 
-By default the app points at excalidraw.com's hosted services via `.env.production`.
-Only the editor itself is expected to work until backends are set up.
+By default the app points at excalidraw.com's hosted services via `.env.production`. Only the editor itself is expected to work until backends are set up.
 
 | Feature | Env var(s) | Status |
 | --- | --- | --- |
@@ -71,7 +68,10 @@ Add an entry here for every change on `deploy`, with the file(s) and the reason.
 
 | Date | Files | Change | Why |
 | --- | --- | --- | --- |
-| 2026-10-13 | `excalidraw-app/index.html`, `excalidraw-app/index.tsx`, `excalidraw-app/global.d.ts` | Install the Novus by Pendo web SDK: install snippet in `<head>`, anonymous `pendo.initialize` at app start, `window.pendo` type. A `location` transform records only the URL fragment's parameter names. | Product analytics for this deployment. The fragment carries the collaboration and share-link encryption keys, which must not reach Pendo. |
+| 2026-10-13 | `excalidraw-app/index.html`, `excalidraw-app/index.tsx` | Install the Novus by Pendo web SDK: install snippet in `<head>`, anonymous `pendo.initialize` at app start. A `location` transform records only the URL fragment's parameter names. | Product analytics for this deployment. The fragment carries the collaboration and share-link encryption keys, which must not reach Pendo. |
+| 2026-10-13 | `packages/excalidraw/analytics.ts`, `packages/excalidraw/components/TTDDialog/*` | `trackAgent` helper, and Pendo agent analytics on the text-to-diagram chat (prompt, response, retry and undo reactions). | Agent analytics for the AI chat. |
+| 2026-10-13 | `packages/excalidraw/global.d.ts` | The only declaration of `Window.pendo`, with `initialize`, `track` and `trackAgent`. `excalidraw-app/global.d.ts` is identical to upstream. | Two separate declarations of `Window.pendo` conflicted and broke the typecheck and the production build. |
+| 2026-10-13 | About 50 files in `excalidraw-app/` and `packages/excalidraw/` (`analytics.ts`, actions, `App.tsx`, collab, library, TTD, export) | Pendo track events through `trackPendoEvent`, 45 named events, plus optional `source` arguments on a few internal functions. `loadFileToCanvas` and `exportToExcalidrawPlus` now require a new argument. | Product analytics on editor and app usage. No URLs, keys or user content are sent. **High conflict risk on upstream sync.** |
 
 ## Known items to revisit
 

@@ -15,16 +15,28 @@ import type {
   NonDeletedExcalidrawElement,
 } from "@excalidraw/element/types";
 
+import { trackPendoEvent } from "../analytics";
+
 import type React from "react";
 import type App from "./App";
 import type { PendingExcalidrawElements } from "../types";
+
+/** the node & direction flowchart nodes are created from (analytics only) */
+type FlowchartCreationSource = {
+  nodeType: ExcalidrawElement["type"];
+  direction: LinkDirection;
+};
 
 type FlowchartOperation =
   | { type: "none" }
   | { type: "canceled" }
   | { type: "creating"; pending: PendingExcalidrawElements }
   | { type: "navigating"; nodeId: ExcalidrawElement["id"] | null }
-  | { type: "committed"; nodes: PendingExcalidrawElements }
+  | {
+      type: "committed";
+      nodes: PendingExcalidrawElements;
+      source: FlowchartCreationSource | null;
+    }
   | { type: "navigationEnded" };
 
 /**
@@ -33,6 +45,7 @@ type FlowchartOperation =
 export class AppFlowchart {
   private creator = new FlowChartCreator();
   private navigator = new FlowChartNavigator();
+  private creationSource: FlowchartCreationSource | null = null;
 
   constructor(private app: App) {}
 
@@ -48,6 +61,7 @@ export class AppFlowchart {
   clear = () => {
     this.creator.clear();
     this.navigator.clear();
+    this.creationSource = null;
   };
 
   handleKeyEvent = (event: React.KeyboardEvent | KeyboardEvent): boolean => {
@@ -78,6 +92,12 @@ export class AppFlowchart {
       case "committed": {
         if (operation.nodes.length) {
           this.app.insertNewElements(operation.nodes);
+          trackPendoEvent("flowchart_nodes_created", {
+            createdElementCount: operation.nodes.length,
+            linkDirection: operation.source?.direction,
+            sourceNodeType: operation.source?.nodeType,
+            totalSceneElements: this.app.scene.getNonDeletedElements().length,
+          });
         }
 
         const firstNode = operation.nodes[0];
@@ -102,6 +122,7 @@ export class AppFlowchart {
     if (event.type === "keydown") {
       if (event.key === KEYS.ESCAPE && creator.isCreatingChart) {
         creator.clear();
+        this.creationSource = null;
         return { type: "canceled" };
       }
 
@@ -119,12 +140,17 @@ export class AppFlowchart {
           selectedElements.length === 1 &&
           isFlowchartNodeElement(selectedElements[0])
         ) {
+          const direction = AppFlowchart.getLinkDirectionFromKey(event.key);
           creator.createNodes(
             selectedElements[0],
             app.state,
-            AppFlowchart.getLinkDirectionFromKey(event.key),
+            direction,
             app.scene,
           );
+          this.creationSource = {
+            nodeType: selectedElements[0].type,
+            direction,
+          };
         }
 
         return { type: "creating", pending: creator.pendingNodes ?? [] };
@@ -158,8 +184,10 @@ export class AppFlowchart {
 
     if (!event[KEYS.CTRL_OR_CMD] && creator.isCreatingChart) {
       const nodes = creator.pendingNodes ?? [];
+      const source = this.creationSource;
       creator.clear();
-      return { type: "committed", nodes };
+      this.creationSource = null;
+      return { type: "committed", nodes, source };
     }
 
     return navigationEnded ? { type: "navigationEnded" } : { type: "none" };

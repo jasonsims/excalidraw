@@ -8,7 +8,12 @@ import {
   ExcalidrawAPIProvider,
   useExcalidrawAPI,
 } from "@excalidraw/excalidraw";
-import { trackEvent } from "@excalidraw/excalidraw/analytics";
+import {
+  getImageFileCount,
+  getNonDeletedElementCount,
+  trackEvent,
+  trackPendoEvent,
+} from "@excalidraw/excalidraw/analytics";
 import { getDefaultAppState } from "@excalidraw/excalidraw/appState";
 import {
   CommandPalette,
@@ -64,6 +69,7 @@ import {
 import type { RemoteExcalidrawElement } from "@excalidraw/excalidraw/data/reconcile";
 import type { RestoredDataState } from "@excalidraw/excalidraw/data/restore";
 import type {
+  ExcalidrawElement,
   FileId,
   NonDeletedExcalidrawElement,
   OrderedExcalidrawElement,
@@ -133,6 +139,10 @@ import { isBrowserStorageStateNewer } from "./data/tabSync";
 import { ShareDialog, shareDialogStateAtom } from "./share/ShareDialog";
 import CollabError, { collabErrorIndicatorAtom } from "./collab/CollabError";
 import { useHandleAppTheme } from "./useHandleAppTheme";
+import {
+  markFirstElementCreatedAsTracked,
+  useTrackFirstElementCreated,
+} from "./useTrackFirstElementCreated";
 import { getPreferredLanguage } from "./app-language/language-detector";
 import { useAppLangCode } from "./app-language/language-state";
 import DebugCanvas, {
@@ -158,6 +168,7 @@ window.EXCALIDRAW_THROTTLE_RENDER = true;
 declare global {
   interface BeforeInstallPromptEventChoiceResult {
     outcome: "accepted" | "dismissed";
+    platform?: string;
   }
 
   interface BeforeInstallPromptEvent extends Event {
@@ -217,6 +228,8 @@ const shareableLinkConfirmDialog = {
 const initializeScene = async (opts: {
   collabAPI: CollabAPI | null;
   excalidrawAPI: ExcalidrawImperativeAPI;
+  /** whether the scene is (re)initialized on page load or on hash change */
+  trigger: "page_load" | "hash_change";
 }): Promise<
   { scene: ExcalidrawInitialDataState | null } & (
     | { isExternalScene: true; id: string; key: string }
@@ -247,6 +260,28 @@ const initializeScene = async (opts: {
     appState: restoreAppState(localDataState?.appState, null),
   };
 
+  // never track the scene URL, id or key (the hash holds the decryption key)
+  const localSceneWasEmpty = !scene.elements.length;
+  const trackSharedSceneOpened = (
+    sourceType: "shareable_link" | "external_url",
+    details: {
+      elements?: readonly ExcalidrawElement[] | null;
+      overwriteConfirmed: boolean;
+      errorType?: "import_failed" | "invalid_scene_url" | "overwrite_declined";
+    },
+  ) => {
+    trackPendoEvent("shared_scene_opened", {
+      sourceType,
+      elementCount: details.elements
+        ? getNonDeletedElementCount(details.elements)
+        : undefined,
+      localSceneWasEmpty,
+      overwriteConfirmed: details.overwriteConfirmed,
+      success: !details.errorType,
+      errorType: details.errorType,
+    });
+  };
+
   let roomLinkData = getCollaborationLinkData(window.location.href);
   const isExternalScene = !!(id || jsonBackendMatch || roomLinkData);
   if (isExternalScene) {
@@ -263,6 +298,14 @@ const initializeScene = async (opts: {
           jsonBackendMatch[1],
           jsonBackendMatch[2],
         );
+
+        // `importFromBackend` resolves to `{}` (after an alert) on failure
+        trackSharedSceneOpened("shareable_link", {
+          elements: imported.elements,
+          overwriteConfirmed: !localSceneWasEmpty,
+          errorType:
+            imported.elements === undefined ? "import_failed" : undefined,
+        });
 
         scene = {
           elements: bumpElementVersions(
@@ -300,6 +343,13 @@ const initializeScene = async (opts: {
 
       roomLinkData = null;
       window.history.replaceState({}, APP_NAME, window.location.origin);
+
+      if (jsonBackendMatch) {
+        trackSharedSceneOpened("shareable_link", {
+          overwriteConfirmed: false,
+          errorType: "overwrite_declined",
+        });
+      }
     }
   } else if (externalUrlMatch) {
     window.history.replaceState({}, APP_NAME, window.location.origin);
@@ -312,9 +362,22 @@ const initializeScene = async (opts: {
         !scene.elements.length ||
         (await openConfirmModal(shareableLinkConfirmDialog))
       ) {
+        trackSharedSceneOpened("external_url", {
+          elements: data.elements,
+          overwriteConfirmed: !localSceneWasEmpty,
+        });
         return { scene: data, isExternalScene };
       }
+      trackSharedSceneOpened("external_url", {
+        elements: data.elements,
+        overwriteConfirmed: false,
+        errorType: "overwrite_declined",
+      });
     } catch (error: any) {
+      trackSharedSceneOpened("external_url", {
+        overwriteConfirmed: false,
+        errorType: "invalid_scene_url",
+      });
       return {
         scene: {
           appState: {
@@ -329,7 +392,9 @@ const initializeScene = async (opts: {
   if (roomLinkData && opts.collabAPI) {
     const { excalidrawAPI } = opts;
 
-    const scene = await opts.collabAPI.startCollaboration(roomLinkData);
+    const scene = await opts.collabAPI.startCollaboration(roomLinkData, {
+      joinMethod: opts.trigger,
+    });
 
     return {
       // when collaborating, the state may have already been updated at this
@@ -436,7 +501,7 @@ const ExcalidrawWrapper = () => {
                   </span>
                 </>
               ),
-              onClose: () => collabAPI?.setUserToFollow(null),
+              onClose: () => collabAPI?.setUserToFollow(null, "frame_closed"),
             },
           }
         : null,
@@ -562,10 +627,20 @@ const ExcalidrawWrapper = () => {
       return;
     }
 
-    initializeScene({ collabAPI, excalidrawAPI }).then(async (data) => {
-      loadImages(data, /* isInitialLoad */ true);
-      initialStatePromiseRef.current.promise.resolve(data.scene);
-    });
+    initializeScene({ collabAPI, excalidrawAPI, trigger: "page_load" }).then(
+      async (data) => {
+        loadImages(data, /* isInitialLoad */ true);
+        initialStatePromiseRef.current.promise.resolve(data.scene);
+        // returning users already have content of their own: they aren't
+        // first-time users, so never track `first_element_created` for them
+        if (
+          !data.isExternalScene &&
+          data.scene?.elements?.some((element) => !element.isDeleted)
+        ) {
+          markFirstElementCreatedAsTracked();
+        }
+      },
+    );
 
     const onHashChange = async (event: HashChangeEvent) => {
       event.preventDefault();
@@ -575,11 +650,15 @@ const ExcalidrawWrapper = () => {
           collabAPI?.isCollaborating() &&
           !isCollaborationLink(window.location.href)
         ) {
-          collabAPI.stopCollaboration(false);
+          collabAPI.stopCollaboration(false, "navigation");
         }
         excalidrawAPI.updateScene({ appState: { isLoading: true } });
 
-        initializeScene({ collabAPI, excalidrawAPI }).then((data) => {
+        initializeScene({
+          collabAPI,
+          excalidrawAPI,
+          trigger: "hash_change",
+        }).then((data) => {
           loadImages(data);
           if (data.scene) {
             excalidrawAPI.updateScene({
@@ -712,6 +791,8 @@ const ExcalidrawWrapper = () => {
     };
   }, [excalidrawAPI]);
 
+  const trackFirstElementCreated = useTrackFirstElementCreated();
+
   const onChange = (
     elements: readonly OrderedExcalidrawElement[],
     appState: AppState,
@@ -720,6 +801,13 @@ const ExcalidrawWrapper = () => {
     if (collabAPI?.isCollaborating()) {
       collabAPI.syncElements(elements);
     }
+
+    trackFirstElementCreated(elements, appState, {
+      isCollaborating: !!collabAPI?.isCollaborating(),
+      formFactor: editorInterface.formFactor,
+      langCode,
+      isExcalidrawPlusSignedUser,
+    });
 
     // this check is redundant, but since this is a hot path, it's best
     // not to evaludate the nested expression every time
@@ -772,8 +860,26 @@ const ExcalidrawWrapper = () => {
     exportedElements: readonly NonDeletedExcalidrawElement[],
     appState: Partial<AppState>,
     files: BinaryFiles,
+    /** where the link is created from (analytics only) */
+    source: "export_dialog" | "share_dialog" = "export_dialog",
   ) => {
+    // never track the url — its hash holds the decryption key
+    const trackShareableLinkCreated = (
+      errorType?: "empty_canvas" | "too_big" | "request_failed",
+    ) => {
+      trackPendoEvent("shareable_link_created", {
+        source,
+        elementCount: exportedElements.length,
+        imageFileCount: getImageFileCount(exportedElements),
+        exportBackground: appState.exportBackground,
+        success: !errorType,
+        errorType,
+        frame: getFrame(),
+      });
+    };
+
     if (exportedElements.length === 0) {
+      trackShareableLinkCreated("empty_canvas");
       throw new Error(t("alerts.cannotExportEmptyCanvas"));
     }
     try {
@@ -794,9 +900,15 @@ const ExcalidrawWrapper = () => {
 
       if (url) {
         setLatestShareableLink(url);
+        trackShareableLinkCreated();
       }
     } catch (error: any) {
       if (error.name !== "AbortError") {
+        trackShareableLinkCreated(
+          error.message === t("alerts.couldNotCreateShareableLinkTooBig")
+            ? "too_big"
+            : "request_failed",
+        );
         const { width, height } = appState;
         console.error(error, {
           width,
@@ -1051,6 +1163,7 @@ const ExcalidrawWrapper = () => {
                   excalidrawAPI.getAppState(),
                   excalidrawAPI.getFiles(),
                   excalidrawAPI.getName(),
+                  "overwrite_confirm",
                 );
               }}
             >
@@ -1092,6 +1205,7 @@ const ExcalidrawWrapper = () => {
                   excalidrawAPI.getSceneElements(),
                   excalidrawAPI.getAppState(),
                   excalidrawAPI.getFiles(),
+                  "share_dialog",
                 );
               } catch (error: any) {
                 setErrorMessage(error.message);
@@ -1144,7 +1258,7 @@ const ExcalidrawWrapper = () => {
               ],
               perform: () => {
                 if (collabAPI) {
-                  collabAPI.stopCollaboration();
+                  collabAPI.stopCollaboration(true, "command_palette");
                   if (!collabAPI.isCollaborating()) {
                     setShareDialogState({ isOpen: false });
                   }
@@ -1268,6 +1382,7 @@ const ExcalidrawWrapper = () => {
                     excalidrawAPI.getAppState(),
                     excalidrawAPI.getFiles(),
                     excalidrawAPI.getName(),
+                    "command_palette",
                   );
                 }
               },
@@ -1279,7 +1394,12 @@ const ExcalidrawWrapper = () => {
               perform: () => {
                 if (pwaEvent) {
                   pwaEvent.prompt();
-                  pwaEvent.userChoice.then(() => {
+                  pwaEvent.userChoice.then((choice) => {
+                    trackPendoEvent("pwa_install_prompt_completed", {
+                      outcome: choice.outcome,
+                      platform: choice.platform,
+                      source: "command_palette",
+                    });
                     // event cannot be reused, but we'll hopefully
                     // grab new one as the event should be fired again
                     pwaEvent = null;

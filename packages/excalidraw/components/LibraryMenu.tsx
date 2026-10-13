@@ -23,7 +23,12 @@ import type {
   NonDeletedExcalidrawElement,
 } from "@excalidraw/element/types";
 
-import { trackEvent } from "../analytics";
+import {
+  getElementTypes,
+  getLibraryItemsStats,
+  trackEvent,
+  trackPendoEvent,
+} from "../analytics";
 import { useUIAppState } from "../context/ui-appState";
 import {
   distributeLibraryItemsOnSquareGrid,
@@ -75,7 +80,10 @@ const LibraryMenuContent = memo(
     onSelectItems,
   }: {
     pendingElements: LibraryItem["elements"];
-    onInsertLibraryItems: (libraryItems: LibraryItems) => void;
+    onInsertLibraryItems: (
+      libraryItems: LibraryItems,
+      opts?: { fromSearch: boolean },
+    ) => void;
     onAddToLibrary: () => void;
     setAppState: React.Component<any, UIAppState>["setState"];
     libraryReturnUrl: ExcalidrawProps["libraryReturnUrl"];
@@ -94,8 +102,24 @@ const LibraryMenuContent = memo(
           libraryItems: LibraryItems,
         ) => {
           trackEvent("element", "addToLibrary", "ui");
+          const trackLibraryItemAdded = (details: {
+            totalLibraryItems?: number;
+            success: boolean;
+            rejectedElementType?: string;
+          }) => {
+            trackPendoEvent("library_item_added", {
+              elementCount: processedElements.length,
+              elementTypes: getElementTypes(processedElements),
+              source: "library_menu",
+              ...details,
+            });
+          };
           for (const type of LIBRARY_DISABLED_TYPES) {
             if (processedElements.some((element) => element.type === type)) {
+              trackLibraryItemAdded({
+                success: false,
+                rejectedElementType: type,
+              });
               return setAppState({
                 errorMessage: t(`errors.libraryElementTypeError.${type}`),
               });
@@ -111,9 +135,18 @@ const LibraryMenuContent = memo(
             ...libraryItems,
           ];
           onAddToLibrary();
-          library.setLibrary(nextItems).catch(() => {
-            setAppState({ errorMessage: t("alerts.errorAddingToLibrary") });
-          });
+          library
+            .setLibrary(nextItems)
+            .then((items) => {
+              trackLibraryItemAdded({
+                totalLibraryItems: items.length,
+                success: true,
+              });
+            })
+            .catch(() => {
+              trackLibraryItemAdded({ success: false });
+              setAppState({ errorMessage: t("alerts.errorAddingToLibrary") });
+            });
         };
         addToLibrary(elements, libraryItemsData.libraryItems);
       },
@@ -317,8 +350,14 @@ export const LibraryMenu = memo(() => {
   }, [selectedItems, setAppState, app]);
 
   const onInsertLibraryItems = useCallback(
-    (libraryItems: LibraryItems) => {
+    (libraryItems: LibraryItems, opts?: { fromSearch: boolean }) => {
       onInsertElements(distributeLibraryItemsOnSquareGrid(libraryItems));
+      trackPendoEvent("library_items_inserted", {
+        insertMethod: "click",
+        ...getLibraryItemsStats(libraryItems),
+        fromSearch: opts?.fromSearch,
+        multiSelect: libraryItems.length > 1,
+      });
       app.focusContainer();
     },
     [onInsertElements, app],

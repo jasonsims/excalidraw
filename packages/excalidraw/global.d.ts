@@ -8,8 +8,25 @@ interface Window {
   gtag: Function;
   sa_event: Function;
   fathom: { trackEvent: Function };
-  /** Pendo agent, present only when the host page installs it */
+  /**
+   * Pendo (Novus) agent. Installed by the host page's snippet, so absent when
+   * the editor is embedded elsewhere. This is the only place `Window.pendo` is
+   * declared: a second declaration with a different type breaks the typecheck.
+   * Typed narrowly to what the code calls: an invalid `location` transform
+   * attr/action pair throws inside `initialize`, so extend deliberately.
+   */
   pendo?: {
+    initialize: (options: {
+      visitor: { id: string };
+      location?: {
+        transforms: readonly {
+          attr: "hash";
+          action: "Replace";
+          data: (hash: string, url: URL) => string;
+        }[];
+      };
+    }) => void;
+    track?: (eventName: string, properties?: Record<string, unknown>) => void;
     trackAgent: (eventType: string, metadata: object) => void;
   };
 }

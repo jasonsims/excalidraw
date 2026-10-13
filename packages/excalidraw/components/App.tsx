@@ -290,7 +290,15 @@ import { actionToggleViewMode } from "../actions/actionToggleViewMode";
 import { ActionManager } from "../actions/manager";
 import { actions } from "../actions/register";
 import { getShortcutFromShortcutName } from "../actions/shortcuts";
-import { trackEvent } from "../analytics";
+import {
+  getImageFileCount,
+  getLibraryItemsStats,
+  getNonDeletedElementCount,
+  getSceneFileType,
+  getUrlHostname,
+  trackEvent,
+  trackPendoEvent,
+} from "../analytics";
 import { getDefaultAppState, isEraserActive } from "../appState";
 import {
   copyTextToSystemClipboard,
@@ -320,6 +328,7 @@ import {
   generateIdFromFile,
   getDataURL,
   getDataURL_sync,
+  getMimeType,
   isImageFileHandle,
   isSupportedImageFile,
   loadSceneOrLibraryFromBlob,
@@ -545,6 +554,9 @@ export const useExcalidrawActionManager = () =>
  * Requires wrapping your component in <ExcalidrawAPIContext.Provider>
  */
 export const useExcalidrawAPI = () => useContext(ExcalidrawAPIContext);
+
+/** how a scene/library file was opened onto the canvas (analytics only) */
+type SceneFileOpenMethod = "drag_drop" | "file_handler" | "share_target";
 
 let didTapTwice: boolean = false;
 let tappedTwiceTimer = 0;
@@ -2762,9 +2774,30 @@ class App extends React.Component<AppProps, AppState> {
   public onExportImage = async (
     type: keyof typeof EXPORT_IMAGE_TYPES,
     elements: ExportedElements,
-    opts: { exportingFrame: NonDeleted<ExcalidrawFrameLikeElement> | null },
+    opts: {
+      exportingFrame: NonDeleted<ExcalidrawFrameLikeElement> | null;
+      /** whether "only selected" was enabled in the dialog (analytics only) */
+      exportSelectionOnly?: boolean;
+    },
   ) => {
     trackEvent("export", type, "ui");
+
+    const trackImageExported = (error?: Error) => {
+      trackPendoEvent("image_exported", {
+        exportType: type,
+        elementCount: elements.length,
+        isFrameExport: !!opts.exportingFrame,
+        exportSelectionOnly: opts.exportSelectionOnly,
+        exportScale: this.state.exportScale,
+        exportBackground: this.state.exportBackground,
+        exportWithDarkMode: this.state.exportWithDarkMode,
+        exportEmbedScene: this.state.exportEmbedScene,
+        imageFileCount: getImageFileCount(elements),
+        success: !error,
+        errorMessage: error?.message,
+      });
+    };
+
     const fileHandle = await exportCanvas(
       type,
       elements,
@@ -2777,9 +2810,15 @@ class App extends React.Component<AppProps, AppState> {
         exportingFrame: opts.exportingFrame,
       },
     )
+      .then((fileHandle) => {
+        trackImageExported();
+        return fileHandle;
+      })
+      // aborted save dialogs aren't tracked
       .catch(muteFSAbortError)
       .catch((error) => {
         console.error(error);
+        trackImageExported(error);
         this.setState({ errorMessage: error.message });
       });
 
@@ -2858,10 +2897,32 @@ class App extends React.Component<AppProps, AppState> {
       this.scene.getNonDeletedElementsMap(),
     ).filter((el) => !isMagicFrameElement(el));
 
+    const generationStartedAt = Date.now();
+    const trackDiagramToCodeGenerated = (
+      outcome:
+        | "success"
+        | "empty_response"
+        | "rate_limited"
+        | "failed"
+        | "no_children",
+      details: { htmlLength?: number; errorMessage?: string } = {},
+    ) => {
+      trackPendoEvent("ai_diagram_to_code_generated", {
+        outcome,
+        source,
+        childElementCount: magicFrameChildren.length,
+        htmlLength: details.htmlLength,
+        durationMs: Date.now() - generationStartedAt,
+        errorMessage: details.errorMessage,
+        theme: this.state.theme,
+      });
+    };
+
     if (!magicFrameChildren.length) {
       if (source === "button") {
         this.setState({ errorMessage: "Cannot generate from an empty frame" });
         trackEvent("ai", "generate (no-children)", "d2c");
+        trackDiagramToCodeGenerated("no_children");
       } else {
         this.setActiveTool({ type: "magicframe" });
       }
@@ -2890,7 +2951,7 @@ class App extends React.Component<AppProps, AppState> {
 
     trackEvent("ai", "generate (start)", "d2c");
     try {
-      const { html } = await generateDiagramToCode({
+      const { html, rateLimited } = await generateDiagramToCode({
         frame: magicFrame,
         children: magicFrameChildren,
         onPartial: (partialResponse) => {
@@ -2922,6 +2983,9 @@ class App extends React.Component<AppProps, AppState> {
       trackEvent("ai", "generate (success)", "d2c");
 
       if (!html.trim()) {
+        trackDiagramToCodeGenerated("empty_response", {
+          htmlLength: html.length,
+        });
         this.updateMagicGeneration({
           frameElement,
           data: {
@@ -2932,6 +2996,10 @@ class App extends React.Component<AppProps, AppState> {
         });
         return;
       }
+
+      trackDiagramToCodeGenerated(rateLimited ? "rate_limited" : "success", {
+        htmlLength: html.length,
+      });
 
       const parsedHtml =
         html.includes("<!DOCTYPE html>") && html.includes("</html>")
@@ -2947,6 +3015,7 @@ class App extends React.Component<AppProps, AppState> {
       });
     } catch (error: any) {
       trackEvent("ai", "generate (failed)", "d2c");
+      trackDiagramToCodeGenerated("failed", { errorMessage: error.message });
       this.updateMagicGeneration({
         frameElement,
         data: {
@@ -3561,6 +3630,8 @@ class App extends React.Component<AppProps, AppState> {
           this.loadFileToCanvas(
             new File([blob], blob.name || "", { type: blob.type }),
             fileHandle,
+            undefined,
+            "file_handler",
           );
         },
       );
@@ -4746,6 +4817,12 @@ class App extends React.Component<AppProps, AppState> {
         })`,
       );
     }
+    trackPendoEvent("editor_preference_changed", {
+      preference: "tool_lock",
+      newValue: !this.state.activeTool.locked,
+      previousValue: this.state.activeTool.locked,
+      source,
+    });
     this.setState((prevState) => {
       return {
         activeTool: {
@@ -4869,7 +4946,7 @@ class App extends React.Component<AppProps, AppState> {
       if (response) {
         const blob = await response.blob();
         const file = new File([blob], blob.name || "", { type: blob.type });
-        this.loadFileToCanvas(file, null);
+        this.loadFileToCanvas(file, null, undefined, "share_target");
         await webShareTargetCache.delete("shared-file");
         this.ownerWindow.history.replaceState(
           null,
@@ -5174,6 +5251,7 @@ class App extends React.Component<AppProps, AppState> {
               convertElementTypes(this, {
                 conversionType,
                 direction: event.shiftKey ? "left" : "right",
+                source: "keyboard",
               })
             ) {
               this.store.scheduleCapture();
@@ -5563,7 +5641,10 @@ class App extends React.Component<AppProps, AppState> {
         event[KEYS.CTRL_OR_CMD] &&
         (event.key === KEYS.BACKSPACE || event.key === KEYS.DELETE)
       ) {
-        this.updateEditorAtom(activeConfirmDialogAtom, "clearCanvas");
+        this.updateEditorAtom(activeConfirmDialogAtom, {
+          name: "clearCanvas",
+          entryPoint: "keyboard",
+        });
       }
 
       // eye dropper
@@ -8344,10 +8425,16 @@ class App extends React.Component<AppProps, AppState> {
     sceneX,
     sceneY,
     link,
+    source = "api",
+    embedCount = 1,
   }: {
     sceneX: number;
     sceneY: number;
     link: string;
+    /** where the embeddable comes from (analytics only) */
+    source?: "paste" | "drop" | "api";
+    /** number of embeddables inserted in the same batch (analytics only) */
+    embedCount?: number;
   }) => {
     const [gridX, gridY] = getGridPoint(
       sceneX,
@@ -8389,6 +8476,18 @@ class App extends React.Component<AppProps, AppState> {
     });
 
     this.insertNewElement(element);
+
+    trackPendoEvent("embeddable_inserted", {
+      source,
+      embedType: embedLink.type,
+      provider: getUrlHostname(link),
+      isAllowedEmbed: !!embeddableURLValidator(
+        link,
+        this.props.validateEmbeddable,
+      ),
+      embedCount,
+      hasURIError: embedLink.error instanceof URIError,
+    });
 
     return element;
   };
@@ -10507,7 +10606,7 @@ class App extends React.Component<AppProps, AppState> {
         multiple: true,
       });
 
-      this.insertImages(imageFiles, x, y);
+      this.insertImages(imageFiles, x, y, "file_picker");
     } catch (error: any) {
       if (error.name !== "AbortError") {
         console.error(error);
@@ -10662,6 +10761,14 @@ class App extends React.Component<AppProps, AppState> {
     imageFiles: File[],
     sceneX: number,
     sceneY: number,
+    /** where the images come from (analytics only) */
+    source:
+      | "file_picker"
+      | "drop"
+      | "paste"
+      | "svg_paste"
+      | "image_url_paste"
+      | "api" = "api",
   ) => {
     const gridPadding = 50 / this.state.zoom.value;
     // Create, position, and insert placeholders
@@ -10673,6 +10780,8 @@ class App extends React.Component<AppProps, AppState> {
     );
     this.insertNewElements(placeholders);
 
+    let firstErrorMessage: string | undefined;
+
     // Create, position, insert and select initialized (replacing placeholders)
     const initialized = await Promise.all(
       placeholders.map(async (placeholder, i) => {
@@ -10682,9 +10791,11 @@ class App extends React.Component<AppProps, AppState> {
             await normalizeFile(imageFiles[i]),
           );
         } catch (error: any) {
-          this.setState({
-            errorMessage: error.message || t("errors.imageInsertError"),
-          });
+          const errorMessage = error.message || t("errors.imageInsertError");
+          if (!firstErrorMessage) {
+            firstErrorMessage = errorMessage;
+          }
+          this.setState({ errorMessage });
           return newElementWith(placeholder as ExcalidrawImageElement, {
             isDeleted: true,
           });
@@ -10716,9 +10827,56 @@ class App extends React.Component<AppProps, AppState> {
       captureUpdate: CaptureUpdateAction.IMMEDIATELY,
     });
 
+    if (imageFiles.length) {
+      trackPendoEvent("images_inserted", {
+        source,
+        fileCount: imageFiles.length,
+        successCount: positioned.length,
+        failedCount: imageFiles.length - positioned.length,
+        mimeTypes: Array.from(
+          new Set(imageFiles.map((file) => file.type || "unknown")),
+        )
+          .sort()
+          .join(","),
+        totalSizeBytes: imageFiles.reduce((size, file) => size + file.size, 0),
+        errorMessage: firstErrorMessage,
+      });
+    }
+
     this.setState({}, () => {
       // actionFinalize after all state values have been updated
       this.actionManager.executeAction(actionFinalize);
+    });
+  };
+
+  private trackSceneFileOpened = ({
+    openMethod,
+    file,
+    elements,
+    replacedExistingScene,
+    insertedAtCursor,
+    errorType,
+  }: {
+    openMethod: SceneFileOpenMethod;
+    file: Blob;
+    elements?: readonly ExcalidrawElement[];
+    replacedExistingScene: boolean;
+    insertedAtCursor: boolean;
+    errorType?:
+      | "invalid_file"
+      | "cannot_restore_from_image"
+      | "image_without_scene"
+      | "unexpected_error";
+  }) => {
+    trackPendoEvent("scene_file_opened", {
+      openMethod,
+      fileType: getSceneFileType(getMimeType(file)),
+      elementCount: elements && getNonDeletedElementCount(elements),
+      imageFileCount: elements && getImageFileCount(elements),
+      replacedExistingScene,
+      insertedAtCursor,
+      success: !errorType,
+      errorType,
     });
   };
 
@@ -10754,6 +10912,13 @@ class App extends React.Component<AppProps, AppState> {
           );
         } catch (error: any) {
           if (error.name !== "EncodingError") {
+            this.trackSceneFileOpened({
+              openMethod: "drag_drop",
+              file,
+              replacedExistingScene: false,
+              insertedAtCursor: !!insertPosition,
+              errorType: "invalid_file",
+            });
             throw new Error(t("alerts.couldNotLoadInvalidFile"));
           }
           // if EncodingError, fall through to insert as regular image
@@ -10767,8 +10932,17 @@ class App extends React.Component<AppProps, AppState> {
               retainSeed: true,
               preserveFrameChildrenOrder: true,
             });
+            this.trackSceneFileOpened({
+              openMethod: "drag_drop",
+              file,
+              elements: scene.elements,
+              replacedExistingScene: false,
+              insertedAtCursor: true,
+            });
             return;
           }
+          const replacedExistingScene =
+            this.scene.getNonDeletedElements().length > 0;
           this.syncActionResult({
             ...scene,
             appState: {
@@ -10779,6 +10953,13 @@ class App extends React.Component<AppProps, AppState> {
             captureUpdate: CaptureUpdateAction.IMMEDIATELY,
           });
           this.showSceneReplacedToast();
+          this.trackSceneFileOpened({
+            openMethod: "drag_drop",
+            file,
+            elements: scene.elements,
+            replacedExistingScene,
+            insertedAtCursor: false,
+          });
           return;
         }
       }
@@ -10789,7 +10970,7 @@ class App extends React.Component<AppProps, AppState> {
       .filter((file) => isSupportedImageFile(file));
 
     if (imageFiles.length > 0 && this.isToolSupported("image")) {
-      return this.insertImages(imageFiles, sceneX, sceneY);
+      return this.insertImages(imageFiles, sceneX, sceneY, "drop");
     }
     const excalidrawLibrary_ids = dataTransferList.getData(
       MIME_TYPES.excalidrawlibIds,
@@ -10829,6 +11010,11 @@ class App extends React.Component<AppProps, AppState> {
             position: event,
             files: null,
           });
+          trackPendoEvent("library_items_inserted", {
+            insertMethod: "drag_drop",
+            ...getLibraryItemsStats(libraryItems),
+            multiSelect: libraryItems.length > 1,
+          });
         }
       } catch (error: any) {
         this.setState({ errorMessage: error.message });
@@ -10840,7 +11026,14 @@ class App extends React.Component<AppProps, AppState> {
       const { file, fileHandle } = fileItems[0];
       if (file) {
         // Attempt to parse an excalidraw/excalidrawlib file
-        if (await this.loadFileToCanvas(file, fileHandle, insertPosition)) {
+        if (
+          await this.loadFileToCanvas(
+            file,
+            fileHandle,
+            insertPosition,
+            "drag_drop",
+          )
+        ) {
           this.showSceneReplacedToast();
         }
       }
@@ -10860,6 +11053,7 @@ class App extends React.Component<AppProps, AppState> {
           sceneX,
           sceneY,
           link: normalizeLink(text),
+          source: "drop",
         });
         if (embeddable) {
           this.store.scheduleCapture();
@@ -10873,7 +11067,8 @@ class App extends React.Component<AppProps, AppState> {
   loadFileToCanvas = async (
     file: File,
     fileHandle: FileSystemFileHandle | null,
-    insertPosition?: { clientX: number; clientY: number },
+    insertPosition: { clientX: number; clientY: number } | undefined,
+    openMethod: SceneFileOpenMethod,
   ) => {
     file = await normalizeFile(file);
     try {
@@ -10897,6 +11092,13 @@ class App extends React.Component<AppProps, AppState> {
             isLoading: false,
             errorMessage: t("errors.imageToolNotSupported"),
           });
+          this.trackSceneFileOpened({
+            openMethod,
+            file,
+            replacedExistingScene: false,
+            insertedAtCursor: !!insertPosition,
+            errorType: "image_without_scene",
+          });
           return;
         }
         const errorMessage = imageSceneDataError
@@ -10905,6 +11107,15 @@ class App extends React.Component<AppProps, AppState> {
         this.setState({
           isLoading: false,
           errorMessage,
+        });
+        this.trackSceneFileOpened({
+          openMethod,
+          file,
+          replacedExistingScene: false,
+          insertedAtCursor: !!insertPosition,
+          errorType: imageSceneDataError
+            ? "cannot_restore_from_image"
+            : "invalid_file",
         });
       }
       if (!ret) {
@@ -10920,8 +11131,17 @@ class App extends React.Component<AppProps, AppState> {
             retainSeed: true,
             preserveFrameChildrenOrder: true,
           });
+          this.trackSceneFileOpened({
+            openMethod,
+            file,
+            elements: ret.data.elements,
+            replacedExistingScene: false,
+            insertedAtCursor: true,
+          });
           return;
         }
+        const replacedExistingScene = getNonDeletedElementCount(elements) > 0;
+
         // restore the fractional indices by mutating elements
         syncInvalidIndices(elements.concat(ret.data.elements));
 
@@ -10943,21 +11163,52 @@ class App extends React.Component<AppProps, AppState> {
           replaceFiles: true,
           captureUpdate: CaptureUpdateAction.IMMEDIATELY,
         });
+        this.trackSceneFileOpened({
+          openMethod,
+          file,
+          elements: ret.data.elements,
+          replacedExistingScene,
+          insertedAtCursor: false,
+        });
         return true;
       } else if (ret.type === MIME_TYPES.excalidrawlib) {
+        let previousLibraryItemCount = 0;
         await this.library
           .updateLibrary({
-            libraryItems: file,
+            libraryItems: (currentLibraryItems) => {
+              previousLibraryItemCount = currentLibraryItems.length;
+              return file;
+            },
             merge: true,
             openLibraryMenu: true,
           })
+          .then((libraryItems) => {
+            trackPendoEvent("library_imported", {
+              source: openMethod,
+              importedItemCount: libraryItems.length - previousLibraryItemCount,
+              totalLibraryItems: libraryItems.length,
+              success: true,
+            });
+          })
           .catch((error) => {
             console.error(error);
+            trackPendoEvent("library_imported", {
+              source: openMethod,
+              success: false,
+              errorMessage: error?.message,
+            });
             this.setState({ errorMessage: t("errors.importLibraryError") });
           });
       }
     } catch (error: any) {
       this.setState({ isLoading: false, errorMessage: error.message });
+      this.trackSceneFileOpened({
+        openMethod,
+        file,
+        replacedExistingScene: false,
+        insertedAtCursor: !!insertPosition,
+        errorType: "unexpected_error",
+      });
     }
   };
 

@@ -1531,7 +1531,14 @@ export type GenerateDiagramToCode = (props: {
    * inside the generated frame.
    */
   onPartial?: (html: string) => void;
-}) => MaybePromise<{ html: string }>;
+}) => MaybePromise<{
+  html: string;
+  /**
+   * Set when the request was rate-limited and `html` is a fallback page
+   * rather than generated code (used for analytics).
+   */
+  rateLimited?: boolean;
+}>;
 
 export type Offsets = Partial<{
   top: number;
