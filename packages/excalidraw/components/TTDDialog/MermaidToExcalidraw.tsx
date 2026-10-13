@@ -6,8 +6,10 @@ import type { NonDeletedExcalidrawElement } from "@excalidraw/element/types";
 
 import { useApp } from "../App";
 import { ArrowRightIcon } from "../icons";
+import { trackPendoEvent } from "../../analytics";
 import { EditorLocalStorage } from "../../data/EditorLocalStorage";
 import { t } from "../../i18n";
+import { getMermaidDiagramType } from "../../mermaid";
 import Trans from "../Trans";
 
 import { useUIAppState } from "../../context/ui-appState";
@@ -75,6 +77,8 @@ const MermaidToExcalidraw = ({
   const deferredText = useDeferredValue(text);
   const [error, setError] = useState<Error | null>(null);
   const [autoFixCandidate, setAutoFixCandidate] = useState<string | null>(null);
+  /** whether the user applied an auto-fix suggestion (analytics only) */
+  const autoFixAppliedRef = useRef(false);
 
   const errorLine = (() => {
     if (!error?.message) {
@@ -215,18 +219,28 @@ const MermaidToExcalidraw = ({
   }, [deferredText, error?.message, isActive, mermaidToExcalidrawLib]);
 
   const onInsertToEditor = () => {
-    insertToEditor({
+    const isInserted = insertToEditor({
       app,
       data,
       text,
       shouldSaveMermaidDataToStorage: true,
     });
+    if (isInserted) {
+      trackPendoEvent("mermaid_diagram_inserted", {
+        source: "mermaid_dialog",
+        elementCount: data.current.elements.length,
+        diagramType: getMermaidDiagramType(text),
+        definitionLength: text.length,
+        autoFixApplied: autoFixAppliedRef.current,
+      });
+    }
   };
 
   const onApplyAutoFix = () => {
     if (!autoFixCandidate) {
       return;
     }
+    autoFixAppliedRef.current = true;
     setText(autoFixCandidate);
   };
 

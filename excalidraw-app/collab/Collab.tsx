@@ -5,8 +5,18 @@ import {
   zoomToFitBounds,
   reconcileElements,
 } from "@excalidraw/excalidraw";
+import {
+  getNonDeletedElementCount,
+  trackPendoEvent,
+} from "@excalidraw/excalidraw/analytics";
 import { ErrorDialog } from "@excalidraw/excalidraw/components/ErrorDialog";
-import { APP_NAME, cloneJSON, EVENT, toBrandedType } from "@excalidraw/common";
+import {
+  APP_NAME,
+  cloneJSON,
+  EVENT,
+  getFrame,
+  toBrandedType,
+} from "@excalidraw/common";
 import {
   IDLE_THRESHOLD,
   ACTIVE_THRESHOLD,
@@ -113,6 +123,27 @@ export const userToFollowAtom = atom<UserToFollow | null>(null);
 
 type CollabInstance = InstanceType<typeof Collab>;
 
+/** analytics state of the current live-collaboration session */
+type CollabSessionTracking = {
+  startedAt: number;
+  peakCollaboratorCount: number;
+  isFirstInRoom: boolean;
+  isJoinTracked: boolean;
+};
+
+/** how a live-collaboration session was ended (analytics only) */
+export type CollabSessionEndSource =
+  | "share_dialog"
+  | "command_palette"
+  | "navigation";
+
+/** what started/stopped following a collaborator (analytics only) */
+type CollaboratorFollowTrigger =
+  | "avatar_click"
+  | "editor_interaction"
+  | "followed_user_left"
+  | "frame_closed";
+
 export interface CollabAPI {
   /** function so that we can access the latest value from stale callbacks */
   isCollaborating: () => boolean;
@@ -144,6 +175,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
   private collaborators = new Map<SocketId, Collaborator>();
   /** the socket ids of the users following the current user */
   private followedBy = new Set<SocketId>();
+  private sessionTracking: CollabSessionTracking | null = null;
 
   constructor(props: CollabProps) {
     super(props);
@@ -217,8 +249,11 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     window.addEventListener(EVENT.UNLOAD, this.onUnload);
 
     const unsubOnUserFollow = this.excalidrawAPI.onUserFollow((payload) => {
+      // FOLLOW intents come from clicking an avatar in the user list,
+      // UNFOLLOW ones from clicking it again or navigating the canvas
       this.setUserToFollow(
         payload.action === "FOLLOW" ? payload.userToFollow : null,
+        payload.action === "FOLLOW" ? "avatar_click" : "editor_interaction",
       );
     });
     const throttledRelayUserViewportBounds = throttleRAF(
@@ -337,7 +372,8 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         this.handleRemoteSceneUpdate(this._reconcileElements(storedElements));
       }
     } catch (error: any) {
-      const errorMessage = /is longer than.*?bytes/.test(error.message)
+      const isSizeExceeded = /is longer than.*?bytes/.test(error.message);
+      const errorMessage = isSizeExceeded
         ? t("errors.collabSaveFailed_sizeExceeded")
         : t("errors.collabSaveFailed");
 
@@ -345,6 +381,12 @@ class Collab extends PureComponent<CollabProps, CollabState> {
         !this.state.dialogNotifiedErrors[errorMessage] ||
         !this.isCollaborating()
       ) {
+        trackPendoEvent("collab_save_failed", {
+          errorType: isSizeExceeded ? "size_exceeded" : "save_failed",
+          elementCount: getNonDeletedElementCount(syncableElements),
+          collaboratorCount: this.collaborators.size,
+          isCollaborating: this.isCollaborating(),
+        });
         this.setErrorDialog(errorMessage);
         this.setState({
           dialogNotifiedErrors: {
@@ -362,7 +404,10 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     }
   };
 
-  stopCollaboration = (keepRemoteState = true) => {
+  stopCollaboration = (
+    keepRemoteState = true,
+    source?: CollabSessionEndSource,
+  ) => {
     this.queueBroadcastAllElements.cancel();
     this.queueSaveToFirebase.cancel();
     this.loadImageFiles.cancel();
@@ -384,6 +429,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     if (!keepRemoteState) {
       LocalData.fileStorage.reset();
       this.destroySocketClient();
+      this.trackSessionEnded(source, false);
     } else if (window.confirm(t("alerts.collabStopOverridePrompt"))) {
       // hack to ensure that we prefer we disregard any new browser state
       // that could have been saved in other tabs while we were collaborating
@@ -391,6 +437,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
       window.history.pushState({}, APP_NAME, window.location.origin);
       this.destroySocketClient();
+      this.trackSessionEnded(source, true);
 
       LocalData.fileStorage.reset();
 
@@ -425,6 +472,24 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       });
       LocalData.resumeSave("collaboration");
     }
+  };
+
+  private trackSessionEnded = (
+    source: CollabSessionEndSource | undefined,
+    keptLocalCopy: boolean,
+  ) => {
+    const { sessionTracking } = this;
+    if (!sessionTracking) {
+      return;
+    }
+    this.sessionTracking = null;
+    trackPendoEvent("collab_session_ended", {
+      source,
+      keptLocalCopy,
+      sessionDurationMs: Date.now() - sessionTracking.startedAt,
+      peakCollaboratorCount: sessionTracking.peakCollaboratorCount,
+      elementCount: this.excalidrawAPI.getSceneElements().length,
+    });
   };
 
   private fetchImageFilesFromFirebase = async (opts: {
@@ -480,7 +545,13 @@ class Collab extends PureComponent<CollabProps, CollabState> {
 
   startCollaboration = async (
     existingRoomLinkData: null | { roomId: string; roomKey: string },
+    /** where the session was started/joined from (analytics only) */
+    trackingContext?: {
+      shareDialogType?: "share" | "collaborationOnly";
+      joinMethod?: "page_load" | "hash_change";
+    },
   ) => {
+    const hadUsername = !!this.state.username;
     if (!this.state.username) {
       import("@excalidraw/random-username").then(({ getRandomUsername }) => {
         const username = getRandomUsername();
@@ -519,12 +590,42 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       /* webpackChunkName: "socketIoClient" */ "socket.io-client"
     );
 
+    const sessionTracking: CollabSessionTracking = {
+      startedAt: Date.now(),
+      peakCollaboratorCount: 0,
+      isFirstInRoom: false,
+      isJoinTracked: false,
+    };
+    // tracked once the joined room's scene is initialized
+    // (never send the room id/key — the link hash holds the encryption key)
+    const trackSessionJoined = (
+      sceneSource: "peer" | "firebase" | "fallback",
+      elements: readonly ExcalidrawElement[] | null | undefined,
+    ) => {
+      if (
+        !existingRoomLinkData ||
+        sessionTracking.isJoinTracked ||
+        this.sessionTracking !== sessionTracking
+      ) {
+        return;
+      }
+      sessionTracking.isJoinTracked = true;
+      trackPendoEvent("collab_session_joined", {
+        joinMethod: trackingContext?.joinMethod,
+        collaboratorCount: this.collaborators.size,
+        isFirstInRoom: sessionTracking.isFirstInRoom,
+        sceneSource,
+        elementCount: elements ? getNonDeletedElementCount(elements) : 0,
+      });
+    };
+
     const fallbackInitializationHandler = () => {
       this.initializeRoom({
         roomLinkData: existingRoomLinkData,
         fetchScene: true,
       }).then((scene) => {
         scenePromise.resolve(scene);
+        trackSessionJoined("fallback", scene?.elements);
       });
     };
     this.fallbackInitializationHandler = fallbackInitializationHandler;
@@ -542,8 +643,19 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     } catch (error: any) {
       console.error(error);
       this.setErrorDialog(error.message);
+      if (!existingRoomLinkData) {
+        trackPendoEvent("collab_session_started", {
+          shareDialogType: trackingContext?.shareDialogType,
+          hasUsername: hadUsername,
+          frame: getFrame(),
+          success: false,
+          errorMessage: error.message,
+        });
+      }
       return null;
     }
+
+    this.sessionTracking = sessionTracking;
 
     if (existingRoomLinkData) {
       // when joining existing room, don't merge it with current scene data
@@ -565,6 +677,18 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       });
 
       this.saveCollabRoomToFirebase(getSyncableElements(elements));
+
+      trackPendoEvent("collab_session_started", {
+        shareDialogType: trackingContext?.shareDialogType,
+        elementCount: elements.length,
+        imageCount: elements.reduce(
+          (count, element) => (isImageElement(element) ? count + 1 : count),
+          0,
+        ),
+        hasUsername: hadUsername,
+        frame: getFrame(),
+        success: true,
+      });
     }
 
     // fallback in case you're not alone in the room but still don't receive
@@ -605,6 +729,7 @@ class Collab extends PureComponent<CollabProps, CollabState> {
                 elements: reconciledElements,
                 scrollToContent: true,
               });
+              trackSessionJoined("peer", reconciledElements);
             }
             break;
           }
@@ -688,11 +813,13 @@ class Collab extends PureComponent<CollabProps, CollabState> {
       if (this.portal.socket) {
         this.portal.socket.off("first-in-room");
       }
+      sessionTracking.isFirstInRoom = true;
       const sceneData = await this.initializeRoom({
         fetchScene: true,
         roomLinkData: existingRoomLinkData,
       });
       scenePromise.resolve(sceneData);
+      trackSessionJoined("firebase", sceneData?.elements);
     });
 
     this.portal.socket.on(
@@ -891,10 +1018,17 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     this.collaborators = collaborators;
     this.excalidrawAPI.updateScene({ collaborators });
 
+    if (this.sessionTracking) {
+      this.sessionTracking.peakCollaboratorCount = Math.max(
+        this.sessionTracking.peakCollaboratorCount,
+        collaborators.size,
+      );
+    }
+
     // unfollow if the followed user left the room
     const userToFollow = appJotaiStore.get(userToFollowAtom);
     if (userToFollow && !collaborators.has(userToFollow.socketId)) {
-      this.setUserToFollow(null);
+      this.setUserToFollow(null, "followed_user_left");
     }
   }
 
@@ -1001,7 +1135,10 @@ class Collab extends PureComponent<CollabProps, CollabState> {
     { leading: false },
   );
 
-  setUserToFollow = (userToFollow: UserToFollow | null) => {
+  setUserToFollow = (
+    userToFollow: UserToFollow | null,
+    trigger?: CollaboratorFollowTrigger,
+  ) => {
     const prev = appJotaiStore.get(userToFollowAtom) ?? null;
 
     if (prev?.socketId !== userToFollow?.socketId && this.portal.socket) {
@@ -1018,6 +1155,14 @@ class Collab extends PureComponent<CollabProps, CollabState> {
           action: "FOLLOW",
         });
       }
+      // never send usernames
+      trackPendoEvent("collaborator_followed", {
+        action: userToFollow ? "follow" : "unfollow",
+        trigger,
+        collaboratorCount: this.collaborators.size,
+        isMutualFollow:
+          !!userToFollow && this.followedBy.has(userToFollow.socketId),
+      });
     }
 
     appJotaiStore.set(userToFollowAtom, userToFollow);

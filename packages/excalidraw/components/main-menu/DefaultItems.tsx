@@ -23,7 +23,7 @@ import { actionToggleViewMode } from "../../actions/actionToggleViewMode";
 import { resolveInputDevice } from "../../appState";
 
 import { getShortcutFromShortcutName } from "../../actions/shortcuts";
-import { trackEvent } from "../../analytics";
+import { trackEvent, trackPendoEvent } from "../../analytics";
 import { useUIAppState } from "../../context/ui-appState";
 import { useSetAtom } from "../../editor-jotai";
 import { useI18n } from "../../i18n";
@@ -223,7 +223,9 @@ export const ClearCanvas = () => {
   return (
     <DropdownMenuItem
       icon={TrashIcon}
-      onSelect={() => setActiveConfirmDialog("clearCanvas")}
+      onSelect={() =>
+        setActiveConfirmDialog({ name: "clearCanvas", entryPoint: "main_menu" })
+      }
       data-testid="clear-canvas-button"
       aria-label={t("buttons.clearReset")}
     >
@@ -459,6 +461,12 @@ const PreferencesBoxSelectionModeItem = () => {
         setAppState({
           boxSelectionMode: value,
         });
+        trackPendoEvent("editor_preference_changed", {
+          preference: "box_selection_mode",
+          newValue: value,
+          previousValue: appState.boxSelectionMode,
+          source: "ui",
+        });
       }}
       choices={[
         {
@@ -492,6 +500,12 @@ const PreferencesInputDeviceItem = () => {
       onChange={(value) => {
         setAppState({
           inputDevice: value,
+        });
+        trackPendoEvent("editor_preference_changed", {
+          preference: "input_device",
+          newValue: value,
+          previousValue: appState.inputDevice,
+          source: "ui",
         });
       }}
       choices={[

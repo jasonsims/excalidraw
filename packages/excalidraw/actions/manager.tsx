@@ -7,7 +7,7 @@ import type {
   OrderedExcalidrawElement,
 } from "@excalidraw/element/types";
 
-import { trackEvent } from "../analytics";
+import { trackEvent, trackPendoEvent } from "../analytics";
 
 import type { AppClassProperties, AppState } from "../types";
 import type {
@@ -19,6 +19,76 @@ import type {
   ActionSource,
 } from "./types";
 
+/**
+ * Editor actions forwarded to Pendo (`editor_action_performed`). Hand-picked:
+ * very frequent actions (undo/redo, zoom, select all, copy/paste) and actions
+ * with a dedicated Pendo event are left out to keep the volume down.
+ */
+const PENDO_TRACKED_EDITOR_ACTIONS = new Set<ActionName>([
+  "group",
+  "ungroup",
+  "alignTop",
+  "alignBottom",
+  "alignLeft",
+  "alignRight",
+  "alignVerticallyCentered",
+  "alignHorizontallyCentered",
+  "distributeHorizontally",
+  "distributeVertically",
+  "flipHorizontal",
+  "flipVertical",
+  "bringForward",
+  "sendBackward",
+  "bringToFront",
+  "sendToBack",
+  "duplicateSelection",
+  "toggleElementLock",
+  "unlockAllElements",
+  "copyStyles",
+  "pasteStyles",
+  "wrapSelectionInFrame",
+  "removeAllElementsFromFrame",
+  "selectAllElementsInFrame",
+  "toggleWrap",
+  "wrapTextInContainer",
+  "bindText",
+  "unbindText",
+  "toggleLinearEditor",
+  "togglePolygon",
+  "cropEditor",
+]);
+
+const trackEditorActionInPendo = (
+  action: Action,
+  source: ActionSource,
+  appState: Readonly<AppState>,
+  elements: readonly ExcalidrawElement[],
+  app: AppClassProperties,
+) => {
+  try {
+    if (
+      source === "api" ||
+      !PENDO_TRACKED_EDITOR_ACTIONS.has(action.name) ||
+      // skip shortcuts pressed while the action isn't applicable
+      (action.predicate &&
+        !action.predicate(elements, appState, app.props, app))
+    ) {
+      return;
+    }
+
+    trackPendoEvent("editor_action_performed", {
+      actionName: action.name,
+      actionCategory: action.trackEvent ? action.trackEvent.category : null,
+      source,
+      formFactor: app.editorInterface.formFactor,
+      selectedElementCount: Object.keys(appState.selectedElementIds).length,
+      viewModeEnabled: appState.viewModeEnabled,
+    });
+  } catch (error) {
+    console.error("error while tracking action:", error);
+  }
+};
+
 const trackAction = (
   action: Action,
   source: ActionSource,
@@ -27,6 +97,8 @@ const trackAction = (
   app: AppClassProperties,
   value: any,
 ) => {
+  trackEditorActionInPendo(action, source, appState, elements, app);
+
   if (action.trackEvent) {
     try {
       if (typeof action.trackEvent === "object") {
@@ -144,7 +216,9 @@ export class ActionManager {
 
     event.preventDefault();
     event.stopPropagation();
-    this.updater(data[0].perform(elements, appState, value, this.app));
+    this.updater(
+      data[0].perform(elements, appState, value, this.app, "keyboard"),
+    );
     return true;
   }
 
@@ -173,7 +247,7 @@ export class ActionManager {
 
     trackAction(action, source, appState, elements, this.app, value);
 
-    this.updater(action.perform(elements, appState, value, this.app));
+    this.updater(action.perform(elements, appState, value, this.app, source));
   }
 
   /**
@@ -214,6 +288,7 @@ export class ActionManager {
             this.getAppState(),
             formState,
             this.app,
+            "ui",
           ),
         );
       };

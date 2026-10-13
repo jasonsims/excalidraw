@@ -3,6 +3,9 @@ import type { Action } from "../../actions/types";
 
 export type CommandPaletteItem = {
   label: string;
+  /** stable, non-localized identifier of the underlying action, if any
+   * (`label` is localized) — used for analytics */
+  actionName?: string;
   /** additional keywords to match against
    * (appended to haystack, not displayed) */
   keywords?: string[];

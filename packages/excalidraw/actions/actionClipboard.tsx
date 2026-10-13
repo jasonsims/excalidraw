@@ -5,6 +5,7 @@ import { CODES, KEYS, isFirefox } from "@excalidraw/common";
 
 import { CaptureUpdateAction } from "@excalidraw/element";
 
+import { trackPendoEvent } from "../analytics";
 import {
   copyTextToSystemClipboard,
   copyToClipboard,
@@ -19,6 +20,37 @@ import { t } from "../i18n";
 
 import { actionDeleteSelected } from "./actionDeleteSelected";
 import { register } from "./register";
+
+import type { ActionSource } from "./types";
+
+const trackCanvasCopiedAsImage = ({
+  format,
+  isSelection,
+  elementCount,
+  isFrameExport,
+  exportWithDarkMode,
+  source,
+  error,
+}: {
+  format: "png" | "svg";
+  isSelection: boolean;
+  elementCount: number;
+  isFrameExport: boolean;
+  exportWithDarkMode: boolean;
+  source: ActionSource | undefined;
+  error?: Error;
+}) => {
+  trackPendoEvent("canvas_copied_as_image", {
+    format,
+    scope: isSelection ? "selection" : "canvas",
+    elementCount,
+    isFrameExport,
+    exportWithDarkMode,
+    source,
+    success: !error,
+    errorMessage: error?.message,
+  });
+};
 
 export const actionCopy = register<ClipboardEvent | null>({
   name: "copy",
@@ -132,7 +164,7 @@ export const actionCopyAsSvg = register({
   label: "labels.copyAsSvg",
   icon: svgIcon,
   trackEvent: { category: "element" },
-  perform: async (elements, appState, _data, app) => {
+  perform: async (elements, appState, _data, app, source) => {
     if (!app.canvas) {
       return {
         captureUpdate: CaptureUpdateAction.EVENTUALLY,
@@ -144,6 +176,21 @@ export const actionCopyAsSvg = register({
       appState,
       true,
     );
+
+    const selectedElements = app.scene.getSelectedElements({
+      selectedElementIds: appState.selectedElementIds,
+      includeBoundTextElement: true,
+      includeElementsInFrames: true,
+    });
+
+    const trackingProps = {
+      format: "svg",
+      isSelection: selectedElements.length > 0,
+      elementCount: exportedElements.length,
+      isFrameExport: !!exportingFrame,
+      exportWithDarkMode: appState.exportWithDarkMode,
+      source,
+    } as const;
 
     try {
       await exportCanvas(
@@ -158,11 +205,7 @@ export const actionCopyAsSvg = register({
         },
       );
 
-      const selectedElements = app.scene.getSelectedElements({
-        selectedElementIds: appState.selectedElementIds,
-        includeBoundTextElement: true,
-        includeElementsInFrames: true,
-      });
+      trackCanvasCopiedAsImage(trackingProps);
 
       return {
         appState: {
@@ -181,6 +224,7 @@ export const actionCopyAsSvg = register({
       };
     } catch (error: any) {
       console.error(error);
+      trackCanvasCopiedAsImage({ ...trackingProps, error });
       return {
         appState: {
           errorMessage: error.message,
@@ -200,7 +244,7 @@ export const actionCopyAsPng = register({
   label: "labels.copyAsPng",
   icon: pngIcon,
   trackEvent: { category: "element" },
-  perform: async (elements, appState, _data, app) => {
+  perform: async (elements, appState, _data, app, source) => {
     if (!app.canvas) {
       return {
         captureUpdate: CaptureUpdateAction.EVENTUALLY,
@@ -217,12 +261,23 @@ export const actionCopyAsPng = register({
       appState,
       true,
     );
+
+    const trackingProps = {
+      format: "png",
+      isSelection: selectedElements.length > 0,
+      elementCount: exportedElements.length,
+      isFrameExport: !!exportingFrame,
+      exportWithDarkMode: appState.exportWithDarkMode,
+      source,
+    } as const;
+
     try {
       await exportCanvas("clipboard", exportedElements, appState, app.files, {
         ...appState,
         exportingFrame,
         name: app.getName(),
       });
+      trackCanvasCopiedAsImage(trackingProps);
       return {
         appState: {
           ...appState,
@@ -241,6 +296,7 @@ export const actionCopyAsPng = register({
       };
     } catch (error: any) {
       console.error(error);
+      trackCanvasCopiedAsImage({ ...trackingProps, error });
       return {
         appState: {
           ...appState,

@@ -1,3 +1,4 @@
+import { trackPendoEvent } from "@excalidraw/excalidraw/analytics";
 import { base64urlToString } from "@excalidraw/excalidraw/data/encode";
 import { ExcalidrawError } from "@excalidraw/excalidraw/errors";
 import { useLayoutEffect, useRef } from "react";
@@ -39,6 +40,9 @@ type MESSAGE_SCENE_DATA = {
 type MESSAGE_FROM_EDITOR = MESSAGE_ERROR | MESSAGE_SCENE_DATA | MESSAGE_READY;
 // -----------------------------------------------------------------------------
 
+const ERROR_MISSING_SCENE_DATA = "Elements or appstate is missing.";
+const ERROR_EMPTY_SCENE = "Scene is empty, nothing to export.";
+
 const parseSceneData = async ({
   rawElementsString,
   rawAppStateString,
@@ -47,7 +51,7 @@ const parseSceneData = async ({
   rawAppStateString: string | null;
 }): Promise<MESSAGE_SCENE_DATA> => {
   if (!rawElementsString || !rawAppStateString) {
-    throw new ExcalidrawError("Elements or appstate is missing.");
+    throw new ExcalidrawError(ERROR_MISSING_SCENE_DATA);
   }
 
   try {
@@ -56,7 +60,7 @@ const parseSceneData = async ({
     ) as OrderedExcalidrawElement[];
 
     if (!elements.length) {
-      throw new ExcalidrawError("Scene is empty, nothing to export.");
+      throw new ExcalidrawError(ERROR_EMPTY_SCENE);
     }
 
     const appState = JSON.parse(rawAppStateString) as Pick<
@@ -164,6 +168,7 @@ export const ExcalidrawPlusIframeExport = () => {
           throw new ExcalidrawError("JWT is missing");
         }
 
+        let isJWTVerified = false;
         try {
           try {
             await verifyJWT({
@@ -174,6 +179,7 @@ export const ExcalidrawPlusIframeExport = () => {
             console.error(`Failed to verify JWT: ${error.message}`);
             throw new ExcalidrawError("Failed to verify JWT");
           }
+          isJWTVerified = true;
 
           const parsedSceneData: MESSAGE_SCENE_DATA = await parseSceneData({
             rawAppStateString: localStorage.getItem(
@@ -187,6 +193,13 @@ export const ExcalidrawPlusIframeExport = () => {
           event.source!.postMessage(parsedSceneData, {
             targetOrigin: EXCALIDRAW_PLUS_ORIGIN,
           });
+
+          trackPendoEvent("excalidraw_plus_scene_handoff_completed", {
+            outcome: "success",
+            elementCount: parsedSceneData.elements.length,
+            loadedFileCount: parsedSceneData.files.loadedFiles.length,
+            erroredFileCount: parsedSceneData.files.erroredFiles.size,
+          });
         } catch (error) {
           const responseData: MESSAGE_ERROR = {
             type: "ERROR",
@@ -195,6 +208,15 @@ export const ExcalidrawPlusIframeExport = () => {
                 ? error.message
                 : "Failed to export scene data",
           };
+          trackPendoEvent("excalidraw_plus_scene_handoff_completed", {
+            outcome: !isJWTVerified
+              ? "jwt_invalid"
+              : error instanceof ExcalidrawError &&
+                (error.message === ERROR_EMPTY_SCENE ||
+                  error.message === ERROR_MISSING_SCENE_DATA)
+              ? "empty_scene"
+              : "parse_failed",
+          });
           event.source!.postMessage(responseData, {
             targetOrigin: EXCALIDRAW_PLUS_ORIGIN,
           });

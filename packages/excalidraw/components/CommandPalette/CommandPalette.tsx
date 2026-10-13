@@ -26,7 +26,11 @@ import {
   actionLinkToElement,
 } from "../../actions/actionElementLink";
 import { getShortcutFromShortcutName } from "../../actions/shortcuts";
-import { trackEvent } from "../../analytics";
+import {
+  getLibraryItemsStats,
+  trackEvent,
+  trackPendoEvent,
+} from "../../analytics";
 import { useUIAppState } from "../../context/ui-appState";
 import { deburr } from "../../deburr";
 import { atom, useAtom, editorJotaiStore } from "../../editor-jotai";
@@ -242,6 +246,13 @@ function CommandPaletteInner({
             app.onInsertElements(
               distributeLibraryItemsOnSquareGrid([libraryItem]),
             );
+            trackPendoEvent("library_items_inserted", {
+              insertMethod: "command_palette",
+              ...getLibraryItemsStats([libraryItem]),
+              // library items are only listed for search queries
+              fromSearch: true,
+              multiSelect: false,
+            });
           },
         })) || []
     );
@@ -292,6 +303,7 @@ function CommandPaletteInner({
     ): CommandPaletteItem => {
       const command: CommandPaletteItem = {
         label: getActionLabel(action),
+        actionName: action.name,
         icon: getActionIcon(action),
         category,
         shortcut: getShortcutFromShortcutName(action.name as ShortcutName),
@@ -389,6 +401,7 @@ function CommandPaletteInner({
         ...editorCommands,
         {
           label: getActionLabel(actionClearCanvas),
+          actionName: actionClearCanvas.name,
           icon: getActionIcon(actionClearCanvas),
           shortcut: getShortcutFromShortcutName(
             actionClearCanvas.name as ShortcutName,
@@ -397,7 +410,10 @@ function CommandPaletteInner({
           keywords: ["delete", "destroy"],
           viewMode: false,
           perform: () => {
-            editorJotaiStore.set(activeConfirmDialogAtom, "clearCanvas");
+            editorJotaiStore.set(activeConfirmDialogAtom, {
+              name: "clearCanvas",
+              entryPoint: "command_palette",
+            });
           },
         },
         {
@@ -662,9 +678,27 @@ function CommandPaletteInner({
       event.stopPropagation();
       event.preventDefault();
       document.body.classList.add("excalidraw-animations-disabled");
+
+      const isLibraryCommand = command.category === DEFAULT_CATEGORIES.library;
+      const trackingProps = {
+        // library item names are user content
+        commandLabel: isLibraryCommand ? "library_item" : command.label,
+        actionName: command.actionName,
+        commandCategory: command.category,
+        searchQueryLength: commandSearch.length,
+        resultCount: Object.values(commandsByCategory).reduce(
+          (count, commands) => count + commands.length,
+          0,
+        ),
+        wasRecentCommand: !commandSearch && command.label === lastUsed?.label,
+        inputMethod: event.type === "click" ? "click" : "keyboard",
+        formFactor: app.editorInterface.formFactor,
+      };
+
       closeCommandPalette(() => {
         command.perform({ actionManager, event });
         setLastUsed(command);
+        trackPendoEvent("command_palette_command_executed", trackingProps);
 
         requestAnimationFrame(() => {
           document.body.classList.remove("excalidraw-animations-disabled");

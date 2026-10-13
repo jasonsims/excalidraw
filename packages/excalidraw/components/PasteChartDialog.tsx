@@ -4,7 +4,7 @@ import { newTextElement } from "@excalidraw/element";
 
 import type { ChartType } from "@excalidraw/element/types";
 
-import { trackEvent } from "../analytics";
+import { trackEvent, trackPendoEvent } from "../analytics";
 import { isSpreadsheetValidForChartType, renderSpreadsheet } from "../charts";
 import { t } from "../i18n";
 import { exportToSvg } from "../scene/export";
@@ -184,8 +184,11 @@ export const PasteChartDialog = ({
 }) => {
   const { onInsertElements, focusContainer } = useApp();
   const [colorSeed, setColorSeed] = useState(Math.random());
+  /** whether the user reshuffled the chart colors (analytics only) */
+  const colorsReshuffledRef = useRef(false);
 
   const handleReshuffleColors = React.useCallback(() => {
+    colorsReshuffledRef.current = true;
     setColorSeed(Math.random());
   }, []);
 
@@ -195,9 +198,23 @@ export const PasteChartDialog = ({
     }
   }, [onClose]);
 
+  const trackChartInserted = (
+    chartType: ChartType | "plaintext",
+    elementCount: number,
+  ) => {
+    trackPendoEvent("chart_inserted_from_spreadsheet", {
+      chartType,
+      seriesCount: data.series.length,
+      labelCount: data.labels?.length ?? 0,
+      elementCount,
+      colorsReshuffled: colorsReshuffledRef.current,
+    });
+  };
+
   const handleChartClick = (chartType: ChartType, elements: ChartElements) => {
     onInsertElements(elements);
     trackEvent("paste", "chart", chartType);
+    trackChartInserted(chartType, elements.length);
     onClose();
     focusContainer();
   };
@@ -210,6 +227,7 @@ export const PasteChartDialog = ({
     });
     onInsertElements([textElement]);
     trackEvent("paste", "chart", "plaintext");
+    trackChartInserted("plaintext", 1);
     onClose();
     focusContainer();
   };

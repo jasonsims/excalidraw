@@ -34,6 +34,7 @@ import type {
   ExcalidrawTextElement,
 } from "@excalidraw/element/types";
 
+import { trackPendoEvent } from "../analytics";
 import { atom, useAtom } from "../editor-jotai";
 
 import { useStable } from "../hooks/useStable";
@@ -374,6 +375,23 @@ export const SearchMenu = () => {
                     }
                   : null,
               });
+
+              // once per settled (debounced) query — never the query itself
+              if (searchQuery) {
+                let frameMatchCount = 0;
+                for (const matchItem of matchItems) {
+                  if (isFrameLikeElement(matchItem.element)) {
+                    frameMatchCount++;
+                  }
+                }
+                trackPendoEvent("canvas_search_performed", {
+                  queryLength: searchQuery.length,
+                  resultsCount: matchItems.length,
+                  textMatchCount: matchItems.length - frameMatchCount,
+                  frameMatchCount,
+                  zeroResults: !matchItems.length,
+                });
+              }
 
               setIsSearching(false);
             });

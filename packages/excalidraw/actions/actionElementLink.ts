@@ -6,6 +6,7 @@ import {
 
 import { CaptureUpdateAction } from "@excalidraw/element";
 
+import { trackPendoEvent } from "../analytics";
 import { copyTextToSystemClipboard } from "../clipboard";
 import { copyIcon, elementLinkIcon } from "../components/icons";
 import { t } from "../i18n";
@@ -18,8 +19,21 @@ export const actionCopyElementLink = register({
   label: "labels.copyElementLink",
   icon: copyIcon,
   trackEvent: { category: "element" },
-  perform: async (elements, appState, _, app) => {
+  perform: async (elements, appState, _, app, source) => {
     const selectedElements = getSelectedElements(elements, appState);
+
+    const trackElementLinkCopied = (
+      targetType: "element" | "group" | undefined,
+      success: boolean,
+    ) => {
+      trackPendoEvent("element_link_copied", {
+        targetType,
+        selectedElementCount: selectedElements.length,
+        usesCustomLinkGenerator: !!app.props.generateLinkForSelection,
+        source,
+        success,
+      });
+    };
 
     try {
       if (window.location) {
@@ -37,6 +51,8 @@ export const actionCopyElementLink = register({
                   idAndType.type,
                 ),
           );
+
+          trackElementLinkCopied(idAndType.type, true);
 
           return {
             appState: {
@@ -57,6 +73,7 @@ export const actionCopyElementLink = register({
       }
     } catch (error: any) {
       console.error(error);
+      trackElementLinkCopied(undefined, false);
     }
 
     return {

@@ -25,6 +25,7 @@ import type { ExcalidrawElement } from "@excalidraw/element/types";
 
 import type { MaybePromise } from "@excalidraw/common/utility-types";
 
+import { getUrlHostname, trackPendoEvent } from "../analytics";
 import { atom, editorJotaiStore } from "../editor-jotai";
 
 import { AbortError } from "../errors";
@@ -739,6 +740,7 @@ export const useHandleLibrary = (
       });
 
       const shouldPrompt = idToken !== excalidrawAPI.id;
+      const libraryHost = getUrlHostname(libraryUrl);
 
       // wait for the tab to be focused before continuing in case we'll prompt
       // for confirmation
@@ -750,15 +752,44 @@ export const useHandleLibrary = (
           })
         : null);
 
+      let itemsBeforeImport = null as LibraryItems | null;
       try {
-        await excalidrawAPI.updateLibrary({
-          libraryItems: libraryPromise,
+        const libraryItems = await excalidrawAPI.updateLibrary({
+          libraryItems: (currentLibraryItems) => {
+            itemsBeforeImport = currentLibraryItems;
+            return libraryPromise;
+          },
           prompt: shouldPrompt,
           merge: true,
           defaultStatus: "published",
           openLibraryMenu: true,
         });
+        // a declined confirmation resolves with the unchanged library
+        const isImported =
+          !!itemsBeforeImport && libraryItems !== itemsBeforeImport;
+        trackPendoEvent("library_imported", {
+          source: "library_url",
+          importedItemCount:
+            isImported && itemsBeforeImport
+              ? libraryItems.length - itemsBeforeImport.length
+              : 0,
+          totalLibraryItems: libraryItems.length,
+          libraryHost,
+          confirmationPrompted: shouldPrompt,
+          success: isImported,
+          errorMessage: isImported ? undefined : "declined",
+        });
       } catch (error: any) {
+        trackPendoEvent("library_imported", {
+          source: "library_url",
+          libraryHost,
+          confirmationPrompted: shouldPrompt,
+          success: false,
+          // the message of a disallowed URL contains the full URL
+          errorMessage: /disallowed library URL/.test(error?.message)
+            ? "disallowed_library_url"
+            : error?.message,
+        });
         excalidrawAPI.updateScene({
           appState: {
             errorMessage: error.message,

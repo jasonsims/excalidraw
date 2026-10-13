@@ -307,6 +307,7 @@ const ImageExportModal = ({
             onClick={() =>
               onExportImage(EXPORT_IMAGE_TYPES.png, exportedElements, {
                 exportingFrame,
+                exportSelectionOnly,
               })
             }
             icon={downloadIcon}
@@ -319,6 +320,7 @@ const ImageExportModal = ({
             onClick={() =>
               onExportImage(EXPORT_IMAGE_TYPES.svg, exportedElements, {
                 exportingFrame,
+                exportSelectionOnly,
               })
             }
             icon={downloadIcon}
@@ -336,6 +338,7 @@ const ImageExportModal = ({
                   exportedElements,
                   {
                     exportingFrame,
+                    exportSelectionOnly,
                   },
                 );
                 onCopy();

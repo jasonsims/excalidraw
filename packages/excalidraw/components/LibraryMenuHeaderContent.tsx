@@ -3,6 +3,7 @@ import { useCallback, useState } from "react";
 
 import { muteFSAbortError } from "@excalidraw/common";
 
+import { getLibraryItemsStats, trackPendoEvent } from "../analytics";
 import { useUIAppState } from "../context/ui-appState";
 import { fileOpen } from "../data/filesystem";
 import { saveLibraryAsJSON } from "../data/json";
@@ -156,24 +157,44 @@ export const LibraryDropdownMenuButton: React.FC<{
   };
 
   const onLibraryImport = async () => {
+    // must be invoked synchronously, within the user gesture
+    const libraryFile = fileOpen({
+      description: "Excalidraw library files",
+      // ToDo: Be over-permissive until https://bugs.webkit.org/show_bug.cgi?id=34442
+      // gets resolved. Else, iOS users cannot open `.excalidraw` files.
+      /*
+        extensions: [".json", ".excalidrawlib"],
+        */
+    });
+    let itemsBeforeImport = null as LibraryItems | null;
     try {
-      await library.updateLibrary({
-        libraryItems: fileOpen({
-          description: "Excalidraw library files",
-          // ToDo: Be over-permissive until https://bugs.webkit.org/show_bug.cgi?id=34442
-          // gets resolved. Else, iOS users cannot open `.excalidraw` files.
-          /*
-            extensions: [".json", ".excalidrawlib"],
-            */
-        }),
+      const libraryItems = await library.updateLibrary({
+        libraryItems: (currentLibraryItems) => {
+          itemsBeforeImport = currentLibraryItems;
+          return libraryFile;
+        },
         merge: true,
         openLibraryMenu: true,
       });
+      // a cancelled file picker resolves with the unchanged library
+      if (itemsBeforeImport && libraryItems !== itemsBeforeImport) {
+        trackPendoEvent("library_imported", {
+          source: "file_picker",
+          importedItemCount: libraryItems.length - itemsBeforeImport.length,
+          totalLibraryItems: libraryItems.length,
+          success: true,
+        });
+      }
     } catch (error: any) {
       if (error?.name === "AbortError") {
         console.warn(error);
         return;
       }
+      trackPendoEvent("library_imported", {
+        source: "file_picker",
+        success: false,
+        errorMessage: error?.message,
+      });
       setAppState({ errorMessage: t("errors.importLibraryError") });
     }
   };
@@ -182,9 +203,22 @@ export const LibraryDropdownMenuButton: React.FC<{
     const libraryItems = itemsSelected
       ? items
       : await library.getLatestLibrary();
+    const trackLibraryExported = (success: boolean) => {
+      const { itemCount, publishedItemCount } =
+        getLibraryItemsStats(libraryItems);
+      trackPendoEvent("library_exported", {
+        exportScope: itemsSelected ? "selected" : "all",
+        itemCount,
+        publishedItemCount,
+        success,
+      });
+    };
     saveLibraryAsJSON(libraryItems)
+      .then(() => trackLibraryExported(true))
+      // cancelled save dialogs aren't tracked
       .catch(muteFSAbortError)
       .catch((error) => {
+        trackLibraryExported(false);
         setAppState({ errorMessage: error.message });
       });
   };
@@ -290,13 +324,49 @@ export const LibraryDropdownMenu = ({
 
   const [libraryItemsData] = useAtom(libraryItemsAtom);
 
+  const trackLibraryItemsRemoved = (
+    action: "remove_selected" | "reset_all",
+    removedItems: LibraryItems,
+    remainingItemCount: number,
+    success: boolean,
+  ) => {
+    const { itemCount, publishedItemCount } =
+      getLibraryItemsStats(removedItems);
+    trackPendoEvent("library_items_removed", {
+      action,
+      removedItemCount: itemCount,
+      remainingItemCount,
+      removedPublishedCount: publishedItemCount,
+      success,
+    });
+  };
+
   const removeFromLibrary = async (libraryItems: LibraryItems) => {
     const nextItems = libraryItems.filter(
       (item) => !selectedItems.includes(item.id),
     );
-    library.setLibrary(nextItems).catch(() => {
-      setAppState({ errorMessage: t("alerts.errorRemovingFromLibrary") });
-    });
+    const removedItems = libraryItems.filter((item) =>
+      selectedItems.includes(item.id),
+    );
+    library
+      .setLibrary(nextItems)
+      .then(() => {
+        trackLibraryItemsRemoved(
+          "remove_selected",
+          removedItems,
+          nextItems.length,
+          true,
+        );
+      })
+      .catch(() => {
+        trackLibraryItemsRemoved(
+          "remove_selected",
+          removedItems,
+          libraryItems.length,
+          false,
+        );
+        setAppState({ errorMessage: t("alerts.errorRemovingFromLibrary") });
+      });
 
     deleteItemsFromLibraryCache(selectedItems);
 
@@ -304,7 +374,21 @@ export const LibraryDropdownMenu = ({
   };
 
   const resetLibrary = () => {
-    library.resetLibrary();
+    const removedItems = libraryItemsData.libraryItems;
+    library
+      .resetLibrary()
+      .then(() => {
+        trackLibraryItemsRemoved("reset_all", removedItems, 0, true);
+      })
+      .catch((error) => {
+        trackLibraryItemsRemoved(
+          "reset_all",
+          removedItems,
+          removedItems.length,
+          false,
+        );
+        throw error;
+      });
     clearLibraryCache();
   };
 

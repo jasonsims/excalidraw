@@ -1,7 +1,12 @@
+import { trackPendoEvent } from "@excalidraw/excalidraw/analytics";
 import Trans from "@excalidraw/excalidraw/components/Trans";
 import { t } from "@excalidraw/excalidraw/i18n";
 import * as Sentry from "@sentry/browser";
 import React from "react";
+
+import { appJotaiStore } from "../app-jotai";
+import { STORAGE_KEYS } from "../app_constants";
+import { isCollaboratingAtom } from "../collab/Collab";
 
 interface TopErrorBoundaryState {
   hasError: boolean;
@@ -36,6 +41,18 @@ export class TopErrorBoundary extends React.Component<
     Sentry.withScope((scope) => {
       scope.setExtras(errorInfo);
       const eventId = Sentry.captureException(error);
+
+      const storedElements = _localStorage[STORAGE_KEYS.LOCAL_STORAGE_ELEMENTS];
+      // only counts — never the scene/localStorage dump itself
+      trackPendoEvent("app_crashed", {
+        errorName: error?.name,
+        errorMessage: error?.message,
+        sentryEventId: eventId,
+        isCollaborating: appJotaiStore.get(isCollaboratingAtom),
+        elementCount: Array.isArray(storedElements)
+          ? storedElements.length
+          : undefined,
+      });
 
       this.setState((state) => ({
         hasError: true,

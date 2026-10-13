@@ -37,6 +37,8 @@ type ActionFn<TData = any> = (
   appState: Readonly<AppState>,
   formData: TData | undefined,
   app: AppClassProperties,
+  /** how the action was invoked (undefined if `perform` is called directly) */
+  source?: ActionSource,
 ) => ActionResult | Promise<ActionResult>;
 
 export type UpdaterFn = (res: ActionResult) => void;
