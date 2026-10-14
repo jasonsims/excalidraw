@@ -5,6 +5,7 @@ import { registerSW } from "virtual:pwa-register";
 import "../excalidraw-app/sentry";
 
 import ExcalidrawApp from "./App";
+import { getPendoVisitorId } from "./fork/pendoVisitorId"; // FORK:
 
 // FORK: Novus by Pendo `location` transform, used by `initialize` below.
 // The URL fragment is where Excalidraw keeps end-to-end encryption keys
@@ -25,9 +26,10 @@ const stripHashParamValues = (hash: string) => {
 
 window.__EXCALIDRAW_SHA__ = import.meta.env.VITE_APP_GIT_SHA;
 
-// FORK: Novus by Pendo: initialize once, anonymously (the app has no sign-in).
+// FORK: Novus by Pendo: initialize once. The app has no sign-in, so the visitor
+// is anonymous unless an id was stored in localStorage (see pendoVisitorId.ts).
 window.pendo?.initialize({
-  visitor: { id: "" },
+  visitor: { id: getPendoVisitorId() },
   location: {
     transforms: [
       { attr: "hash", action: "Replace", data: stripHashParamValues },
